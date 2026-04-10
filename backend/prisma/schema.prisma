@@ -1,0 +1,263 @@
+// Prisma schema for KNU Online Testing Platform
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  TEACHER
+  STUDENT
+}
+
+enum QuestionType {
+  SINGLE_CHOICE
+  MULTIPLE_CHOICE
+  OPEN_TEXT
+  MATCHING
+  GAP_TEXT
+}
+
+enum TestRunStatus {
+  SCHEDULED
+  ACTIVE
+  COMPLETED
+}
+
+enum AttemptStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  SUBMITTED
+  FORCED_SUBMIT
+  TIMEOUT
+}
+
+enum IntegrityEventType {
+  FULLSCREEN_EXIT
+  TAB_BLUR
+  PASTE
+  SCREENSHOT
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  fullName  String
+  role      UserRole
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  teacher   Teacher?
+  attempts  StudentAttempt[]
+  auditLogs AuditLog[]
+}
+
+model Teacher {
+  id         String  @id
+  user       User    @relation(fields: [id], references: [id])
+  department String?
+  position   String?
+
+  questionGroups   QuestionGroup[]
+  questions        Question[]
+  tests            Test[]
+  studentProfiles  StudentProfile[]
+}
+
+model QuestionGroup {
+  id        String   @id @default(cuid())
+  teacher   Teacher  @relation(fields: [teacherId], references: [id])
+  teacherId String
+  name      String
+  description String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  questions Question[]
+  testQuestionRules TestQuestionRule[]
+}
+
+
+enum TestMode {
+  TRAINING
+  EXAM
+}
+model Question {
+  id        String       @id @default(cuid())
+  teacher   Teacher      @relation(fields: [teacherId], references: [id])
+  teacherId String
+  group     QuestionGroup @relation(fields: [groupId], references: [id])
+  groupId   String
+  type      QuestionType
+  text      String
+  imageUrl  String?
+  weight    Decimal       @db.Decimal(10, 2)
+  perQuestionTimeSec Int?
+  matchingSchema     Json?
+  gapSchema          Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  options QuestionOption[]
+  gradingKey QuestionGradingKey?
+  attemptQuestions AttemptQuestion[]
+  testQuestionRules TestQuestionRule[]
+}
+
+model QuestionOption {
+  id          String   @id @default(cuid())
+  question    Question @relation(fields: [questionId], references: [id])
+  questionId  String
+  label       String
+  value       String
+  imageUrl    String?
+  isCorrect   Boolean
+  orderIndex  Int
+}
+
+model QuestionGradingKey {
+  id        String   @id @default(cuid())
+  question  Question @relation(fields: [questionId], references: [id])
+  questionId String  @unique
+  rubric    Json?
+  autoGradingConfig Json?
+}
+
+model Test {
+  id        String   @id @default(cuid())
+  teacher   Teacher  @relation(fields: [teacherId], references: [id])
+  teacherId String
+  name      String
+  description String?
+  totalTimeSec Int?
+  mode      TestMode @default(EXAM)
+  allowMultipleAttempts Boolean @default(false)
+  showCorrectAnswersImmediately Boolean @default(false)
+  showResultToStudent Boolean @default(false)
+  allowBackNavigation Boolean @default(false)
+  isArchived Boolean @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  rules   TestQuestionRule[]
+  runs    TestRun[]
+}
+
+model TestQuestionRule {
+  id        String   @id @default(cuid())
+  test      Test     @relation(fields: [testId], references: [id])
+  testId    String
+  mode      String   // GROUP_RANDOM or EXPLICIT_QUESTION
+  group     QuestionGroup? @relation(fields: [groupId], references: [id])
+  groupId   String?
+  question  Question? @relation(fields: [questionId], references: [id])
+  questionId String?
+  questionsCount Int?
+  orderIndex Int
+}
+
+model TestRun {
+  id        String        @id @default(cuid())
+  test      Test          @relation(fields: [testId], references: [id])
+  testId    String
+  token     String        @unique
+  status    TestRunStatus @default(SCHEDULED)
+  startsAt  DateTime
+  endsAt    DateTime
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  attempts  StudentAttempt[]
+}
+
+model StudentAttempt {
+  id          String        @id @default(cuid())
+  testRun     TestRun       @relation(fields: [testRunId], references: [id])
+  testRunId   String
+  user        User          @relation(fields: [userId], references: [id])
+  userId      String
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  status      AttemptStatus @default(NOT_STARTED)
+  totalScore  Decimal?      @db.Decimal(10, 2)
+  percentage  Decimal?      @db.Decimal(5, 2)
+  totalTimeSec Int?
+  integrityScore Decimal?   @db.Decimal(10, 2)
+  capturedName   String?
+  capturedGroup  String?
+
+  questions   AttemptQuestion[]
+  integrityEvents IntegrityEvent[]
+}
+
+model AttemptQuestion {
+  id          String   @id @default(cuid())
+  attempt     StudentAttempt @relation(fields: [attemptId], references: [id])
+  attemptId   String
+  question    Question @relation(fields: [questionId], references: [id])
+  questionId  String
+  orderIndex  Int
+  perQuestionTimeSec Int?
+  startedAt   DateTime?
+  answeredAt  DateTime?
+  timeSpentSec Int?
+  isTimedOut  Boolean @default(false)
+  maxScore    Decimal @db.Decimal(10, 2)
+  scoreAwarded Decimal? @db.Decimal(10, 2)
+
+  answers     Answer[]
+  integrityEvents IntegrityEvent[]
+}
+
+model Answer {
+  id          String   @id @default(cuid())
+  attemptQuestion AttemptQuestion @relation(fields: [attemptQuestionId], references: [id])
+  attemptQuestionId String
+  answerPayload Json
+  submittedAt  DateTime @default(now())
+}
+
+model IntegrityEvent {
+  id          String   @id @default(cuid())
+  attempt     StudentAttempt @relation(fields: [attemptId], references: [id])
+  attemptId   String
+  attemptQuestion AttemptQuestion? @relation(fields: [attemptQuestionId], references: [id])
+  attemptQuestionId String?
+  type        IntegrityEventType
+  startedAt   DateTime
+  endedAt     DateTime?
+  durationMs  Int?
+  metadata    Json?
+}
+
+model StudentProfile {
+  id         String   @id @default(cuid())
+  teacher    Teacher  @relation(fields: [teacherId], references: [id])
+  teacherId  String
+  email      String
+  firstName  String
+  lastName   String
+  middleName String?
+  group      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([teacherId, email])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  user        User?    @relation(fields: [userId], references: [id])
+  userId      String?
+  action      String
+  entityType  String
+  entityId    String?
+  ip          String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+  details     Json?
+}
