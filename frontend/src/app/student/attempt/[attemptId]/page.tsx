@@ -11,6 +11,8 @@ import {
   submitAnswers,
 } from "@/lib/api";
 import LatexText from "@/lib/LatexText";
+import { usePhoneDetection } from "@/hooks/usePhoneDetection";
+import { useSpeechMonitor } from "@/hooks/useSpeechMonitor";
 import dynamic from "next/dynamic";
 
 const CodeEditor = dynamic(() => import("@/components/CodeEditor"), {
@@ -351,6 +353,18 @@ export default function AttemptPage() {
   useFocusTracking(hasStarted && isExam ? attemptId ?? null : null);
   usePasteDetection(hasStarted && isExam ? attemptId ?? null : null, currentQuestion?.id ?? null);
   useAntiCheatControls(hasStarted && isExam ? attemptId ?? null : null, currentQuestion?.id ?? null);
+
+  // Proctoring: phone detection via camera + speech monitoring via mic
+  usePhoneDetection(
+    hasStarted && isExam ? mediaStream : null,
+    attemptId ?? null,
+    currentQuestion?.id ?? null,
+  );
+  useSpeechMonitor(
+    hasStarted && isExam,
+    attemptId ?? null,
+    currentQuestion?.id ?? null,
+  );
 
   useEffect(() => {
     let cancelled = false;

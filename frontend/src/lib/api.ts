@@ -89,7 +89,7 @@ export async function finishAttempt(attemptId: string, timePerQuestion?: Record<
 export async function logIntegrityEvent(payload: {
   attemptId: string;
   attemptQuestionId?: string;
-  type: 'FULLSCREEN_EXIT' | 'TAB_BLUR' | 'PASTE' | 'SCREENSHOT';
+  type: 'FULLSCREEN_EXIT' | 'TAB_BLUR' | 'PASTE' | 'SCREENSHOT' | 'PHONE_DETECTED' | 'SUSPICIOUS_SPEECH';
   startedAt: string;
   endedAt?: string;
   metadata?: Record<string, unknown>;

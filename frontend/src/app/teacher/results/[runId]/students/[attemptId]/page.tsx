@@ -45,6 +45,7 @@ interface ViolationLogRow {
   startedAt: string;
   endedAt: string | null;
   durationMs: number | null;
+  metadata?: Record<string, any> | null;
 }
 
 interface DetailResponse {
@@ -415,7 +416,11 @@ export default function StudentAttemptPage() {
               >
                 <div className="flex items-center justify-between">
                   <span className="font-medium text-zinc-900 dark:text-zinc-50">
-                    {v.type}
+                    {v.type === "PHONE_DETECTED"
+                      ? "📱 Телефон"
+                      : v.type === "SUSPICIOUS_SPEECH"
+                        ? "🎙 Підозріле мовлення"
+                        : v.type}
                   </span>
                   <span className="text-zinc-500 dark:text-zinc-400">
                     {v.durationMs ? `${Math.round(v.durationMs / 1000)}с` : ""}
@@ -424,6 +429,35 @@ export default function StudentAttemptPage() {
                 <div className="text-zinc-500 dark:text-zinc-400">
                   {new Date(v.startedAt).toLocaleString()} — {v.endedAt ? new Date(v.endedAt).toLocaleString() : "?"}
                 </div>
+                {v.type === "PHONE_DETECTED" && v.metadata && (
+                  <div className="mt-1 space-y-1">
+                    <div className="text-orange-600 dark:text-orange-400">
+                      Впевненість: {v.metadata.confidence}%
+                    </div>
+                    {v.metadata.frame && (
+                      <img
+                        src={v.metadata.frame}
+                        alt="Кадр при детекції телефону"
+                        className="max-h-40 w-auto rounded-md border border-zinc-300 dark:border-zinc-600"
+                      />
+                    )}
+                  </div>
+                )}
+                {v.type === "SUSPICIOUS_SPEECH" && v.metadata && (
+                  <div className="mt-0.5 space-y-0.5">
+                    <div className="text-orange-600 dark:text-orange-400">
+                      {v.metadata.reason}
+                    </div>
+                    {v.metadata.transcript && (
+                      <div className="italic text-zinc-500 dark:text-zinc-400">
+                        &ldquo;{v.metadata.transcript}&rdquo;
+                        {v.metadata.confidence != null && (
+                          <span className="ml-1 not-italic">({v.metadata.confidence}%)</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {v.attemptQuestionId && (
                   <div className="text-zinc-500 dark:text-zinc-400">
                     Питання: {v.attemptQuestionId}

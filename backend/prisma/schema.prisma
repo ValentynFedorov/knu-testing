@@ -41,6 +41,8 @@ enum IntegrityEventType {
   TAB_BLUR
   PASTE
   SCREENSHOT
+  PHONE_DETECTED
+  SUSPICIOUS_SPEECH
 }
 
 model User {
@@ -66,6 +68,7 @@ model Teacher {
   questions        Question[]
   tests            Test[]
   studentProfiles  StudentProfile[]
+  courses          Course[]
 }
 
 model QuestionGroup {
@@ -234,6 +237,19 @@ model IntegrityEvent {
   metadata    Json?
 }
 
+model Course {
+  id        String   @id @default(cuid())
+  teacher   Teacher  @relation(fields: [teacherId], references: [id])
+  teacherId String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  studentProfiles StudentProfile[]
+
+  @@unique([teacherId, name])
+}
+
 model StudentProfile {
   id         String   @id @default(cuid())
   teacher    Teacher  @relation(fields: [teacherId], references: [id])
@@ -243,6 +259,8 @@ model StudentProfile {
   lastName   String
   middleName String?
   group      String?
+  course     Course?  @relation(fields: [courseId], references: [id])
+  courseId   String?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 

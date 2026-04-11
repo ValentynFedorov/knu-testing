@@ -257,6 +257,7 @@ export class AnalyticsService {
         startedAt: e.startedAt,
         endedAt: e.endedAt,
         durationMs: e.durationMs,
+        metadata: e.metadata,
       }));
 
     return {

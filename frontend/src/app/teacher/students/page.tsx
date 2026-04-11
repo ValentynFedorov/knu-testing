@@ -2,12 +2,20 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
+interface CourseView {
+  id: string;
+  name: string;
+  _count: { studentProfiles: number };
+}
+
 interface StudentProfileView {
   id: string;
   firstName: string;
   lastName: string;
   middleName?: string | null;
   group?: string | null;
+  courseId?: string | null;
+  courseName?: string | null;
 }
 
 interface StudentAttemptView {
@@ -27,22 +35,22 @@ interface StudentRow {
   attempts: StudentAttemptView[];
 }
 
-/** Parse course number from group string like "КН-21" → "2", "МА-31" → "3" */
-function parseCourse(group: string | null | undefined): string | null {
-  if (!group) return null;
-  const m = group.match(/-(\d)/);
-  return m ? m[1] : null;
-}
-
 export default function TeacherStudentsPage() {
   const [students, setStudents] = useState<StudentRow[]>([]);
+  const [courses, setCourses] = useState<CourseView[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const [activeCourse, setActiveCourse] = useState<string | null>(null);
+  const [activeCourseId, setActiveCourseId] = useState<string | null>(null);
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
+
+  // Course creation / editing
+  const [newCourseName, setNewCourseName] = useState("");
+  const [creatingCourse, setCreatingCourse] = useState(false);
+  const [editingCourseId, setEditingCourseId] = useState<string | null>(null);
+  const [editingCourseName, setEditingCourseName] = useState("");
 
   // Form state
   const [emailInput, setEmailInput] = useState("");
@@ -50,100 +58,85 @@ export default function TeacherStudentsPage() {
   const [lastName, setLastName] = useState("");
   const [middleName, setMiddleName] = useState("");
   const [group, setGroup] = useState("");
+  const [courseId, setCourseId] = useState("");
 
   useEffect(() => {
-    load();
+    loadAll();
   }, []);
 
-  async function load() {
+  async function loadAll() {
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch("/api/teacher/students");
-      if (!res.ok) throw new Error(await res.text());
-      const data = (await res.json()) as StudentRow[];
-      setStudents(data);
-      if (!selectedEmail && data[0]) {
-        setSelectedEmail(data[0].email);
-        fillFormFromStudent(data[0]);
+      const [studentsRes, coursesRes] = await Promise.all([
+        fetch("/api/teacher/students"),
+        fetch("/api/teacher/students/courses"),
+      ]);
+      if (!studentsRes.ok) throw new Error(await studentsRes.text());
+      if (!coursesRes.ok) throw new Error(await coursesRes.text());
+
+      const studentsData = (await studentsRes.json()) as StudentRow[];
+      const coursesData = (await coursesRes.json()) as CourseView[];
+
+      setStudents(studentsData);
+      setCourses(coursesData);
+
+      if (!selectedEmail && studentsData[0]) {
+        setSelectedEmail(studentsData[0].email);
+        fillFormFromStudent(studentsData[0]);
       } else if (selectedEmail) {
-        const updated = data.find((s) => s.email === selectedEmail);
+        const updated = studentsData.find((s) => s.email === selectedEmail);
         if (updated) fillFormFromStudent(updated);
       }
     } catch (err) {
       console.error(err);
-      setError("Не вдалося завантажити студентів");
+      setError("Не вдалося завантажити дані");
     } finally {
       setLoading(false);
     }
   }
 
-  // Build course → groups → students structure
-  const courseMap = useMemo(() => {
-    const map = new Map<string, Map<string, StudentRow[]>>();
-    const noGroup: StudentRow[] = [];
-
-    for (const s of students) {
-      const grp = s.profile?.group?.trim() || null;
-      if (!grp) {
-        noGroup.push(s);
-        continue;
-      }
-      const course = parseCourse(grp) ?? "?";
-      if (!map.has(course)) map.set(course, new Map());
-      const groupMap = map.get(course)!;
-      if (!groupMap.has(grp)) groupMap.set(grp, []);
-      groupMap.get(grp)!.push(s);
-    }
-
-    return { map, noGroup };
-  }, [students]);
-
-  const courses = useMemo(() => {
-    const keys = Array.from(courseMap.map.keys()).sort();
-    if (courseMap.noGroup.length > 0) keys.push("none");
-    return keys;
-  }, [courseMap]);
-
-  const groups = useMemo(() => {
-    if (!activeCourse) return [];
-    if (activeCourse === "none") return ["none"];
-    const groupMap = courseMap.map.get(activeCourse);
-    return groupMap ? Array.from(groupMap.keys()).sort() : [];
-  }, [activeCourse, courseMap]);
+  // ── Course filtering ──
 
   const filteredStudents = useMemo(() => {
-    if (!activeCourse) return students;
-    if (activeCourse === "none") return courseMap.noGroup;
-    if (!activeGroup) {
-      // Show all students in this course
-      const groupMap = courseMap.map.get(activeCourse);
-      if (!groupMap) return [];
-      return Array.from(groupMap.values()).flat();
-    }
-    if (activeGroup === "none") return courseMap.noGroup;
-    const groupMap = courseMap.map.get(activeCourse);
-    return groupMap?.get(activeGroup) ?? [];
-  }, [activeCourse, activeGroup, courseMap, students]);
+    let filtered = students;
 
-  // Auto-select first course if not set
-  useEffect(() => {
-    if (!activeCourse && courses.length > 0) {
-      setActiveCourse(courses[0]);
+    if (activeCourseId === "__none__") {
+      filtered = filtered.filter((s) => !s.profile?.courseId);
+    } else if (activeCourseId) {
+      filtered = filtered.filter((s) => s.profile?.courseId === activeCourseId);
     }
-  }, [courses, activeCourse]);
 
-  // Auto-select first group when course changes
-  useEffect(() => {
-    if (groups.length > 0 && !groups.includes(activeGroup ?? "")) {
-      setActiveGroup(groups[0]);
+    if (activeGroup && activeGroup !== "__all__") {
+      filtered = filtered.filter(
+        (s) => (s.profile?.group ?? "") === activeGroup,
+      );
     }
-  }, [groups, activeGroup]);
+
+    return filtered;
+  }, [students, activeCourseId, activeGroup]);
+
+  const groupsInCourse = useMemo(() => {
+    let subset = students;
+    if (activeCourseId === "__none__") {
+      subset = subset.filter((s) => !s.profile?.courseId);
+    } else if (activeCourseId) {
+      subset = subset.filter((s) => s.profile?.courseId === activeCourseId);
+    }
+    const groups = new Set<string>();
+    for (const s of subset) {
+      const g = s.profile?.group?.trim();
+      if (g) groups.add(g);
+    }
+    return Array.from(groups).sort();
+  }, [students, activeCourseId]);
 
   const selectedStudent = useMemo(
     () => students.find((s) => s.email === selectedEmail) ?? null,
     [students, selectedEmail],
   );
+
+  // ── Form helpers ──
 
   function fillFormFromStudent(row: StudentRow | null) {
     if (!row) {
@@ -152,6 +145,7 @@ export default function TeacherStudentsPage() {
       setLastName("");
       setMiddleName("");
       setGroup("");
+      setCourseId("");
       return;
     }
     setEmailInput(row.email);
@@ -160,6 +154,7 @@ export default function TeacherStudentsPage() {
       setLastName(row.profile.lastName ?? "");
       setMiddleName(row.profile.middleName ?? "");
       setGroup(row.profile.group ?? "");
+      setCourseId(row.profile.courseId ?? "");
     } else {
       const localPart = row.email.split("@")[0] ?? "";
       const [first, last] = localPart.split("_");
@@ -167,6 +162,7 @@ export default function TeacherStudentsPage() {
       setLastName(last ? capitalize(last) : "");
       setMiddleName("");
       setGroup("");
+      setCourseId("");
     }
   }
 
@@ -178,6 +174,8 @@ export default function TeacherStudentsPage() {
     setSelectedEmail(row.email);
     fillFormFromStudent(row);
   }
+
+  // ── Save student profile ──
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -201,6 +199,7 @@ export default function TeacherStudentsPage() {
         lastName: lastName.trim(),
         middleName: middleName.trim() || undefined,
         group: group.trim() || undefined,
+        courseId: courseId || undefined,
       };
       const res = await fetch("/api/teacher/students", {
         method: "POST",
@@ -208,13 +207,69 @@ export default function TeacherStudentsPage() {
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(await res.text());
-      await load();
+      await loadAll();
       setSelectedEmail(email);
     } catch (err) {
       console.error(err);
       setError("Не вдалося зберегти профіль студента");
     } finally {
       setSaving(false);
+    }
+  }
+
+  // ── Course CRUD ──
+
+  async function handleCreateCourse() {
+    const name = newCourseName.trim();
+    if (!name) return;
+    try {
+      setCreatingCourse(true);
+      const res = await fetch("/api/teacher/students/courses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setNewCourseName("");
+      await loadAll();
+    } catch (err) {
+      console.error(err);
+      setError("Не вдалося створити курс");
+    } finally {
+      setCreatingCourse(false);
+    }
+  }
+
+  async function handleRenameCourse(id: string, name: string) {
+    if (!name.trim()) return;
+    try {
+      const res = await fetch(`/api/teacher/students/courses/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setEditingCourseId(null);
+      await loadAll();
+    } catch (err) {
+      console.error(err);
+      setError("Не вдалося перейменувати курс");
+    }
+  }
+
+  async function handleDeleteCourse(id: string) {
+    if (!confirm("Видалити курс? Студентів буде відкріплено від цього курсу."))
+      return;
+    try {
+      const res = await fetch(`/api/teacher/students/courses/${id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error(await res.text());
+      if (activeCourseId === id) setActiveCourseId(null);
+      await loadAll();
+    } catch (err) {
+      console.error(err);
+      setError("Не вдалося видалити курс");
     }
   }
 
@@ -232,7 +287,8 @@ export default function TeacherStudentsPage() {
           Студенти
         </h1>
         <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          Керуйте списком студентів та переглядайте їхні результати тестів.
+          Керуйте курсами, списком студентів та переглядайте їхні результати
+          тестів.
         </p>
       </header>
 
@@ -242,48 +298,150 @@ export default function TeacherStudentsPage() {
         </p>
       )}
 
-      {/* Course tabs */}
-      {courses.length > 0 && (
-        <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400 mr-1">
-              Курс:
+      {/* Course management */}
+      <div className="rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            Курси
+          </h2>
+        </div>
+
+        {/* Course tabs */}
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveCourseId(null);
+              setActiveGroup(null);
+            }}
+            className={tabClass(activeCourseId === null)}
+          >
+            Всі
+          </button>
+          {courses.map((c) => (
+            <span key={c.id} className="inline-flex items-center gap-1">
+              {editingCourseId === c.id ? (
+                <span className="inline-flex items-center gap-1">
+                  <input
+                    type="text"
+                    value={editingCourseName}
+                    onChange={(e) => setEditingCourseName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleRenameCourse(c.id, editingCourseName);
+                      if (e.key === "Escape") setEditingCourseId(null);
+                    }}
+                    className="w-32 rounded border border-blue-400 bg-white px-2 py-1 text-xs text-zinc-900 outline-none dark:bg-zinc-800 dark:text-zinc-50"
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleRenameCourse(c.id, editingCourseName)}
+                    className="rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-blue-700"
+                  >
+                    OK
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingCourseId(null)}
+                    className="text-[10px] text-zinc-400 hover:text-zinc-600"
+                  >
+                    X
+                  </button>
+                </span>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveCourseId(c.id);
+                      setActiveGroup(null);
+                    }}
+                    className={tabClass(activeCourseId === c.id)}
+                  >
+                    {c.name}{" "}
+                    <span className="opacity-70">({c._count.studentProfiles})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingCourseId(c.id);
+                      setEditingCourseName(c.name);
+                    }}
+                    className="text-[10px] text-zinc-400 hover:text-blue-500"
+                    title="Перейменувати курс"
+                  >
+                    &#9998;
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteCourse(c.id)}
+                    className="text-[10px] text-zinc-400 hover:text-red-500"
+                    title="Видалити курс"
+                  >
+                    x
+                  </button>
+                </>
+              )}
             </span>
-            {courses.map((c) => (
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              setActiveCourseId("__none__");
+              setActiveGroup(null);
+            }}
+            className={tabClass(activeCourseId === "__none__")}
+          >
+            Без курсу
+          </button>
+        </div>
+
+        {/* Group sub-tabs — only when a specific course is selected */}
+        {activeCourseId && activeCourseId !== "__none__" && groupsInCourse.length > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400 mr-1">
+              Група:
+            </span>
+            <button
+              type="button"
+              onClick={() => setActiveGroup(null)}
+              className={tabClass(!activeGroup)}
+            >
+              Всі
+            </button>
+            {groupsInCourse.map((g) => (
               <button
-                key={c}
+                key={g}
                 type="button"
-                onClick={() => {
-                  setActiveCourse(c);
-                  setActiveGroup(null);
-                }}
-                className={tabClass(activeCourse === c)}
+                onClick={() => setActiveGroup(g)}
+                className={tabClass(activeGroup === g)}
               >
-                {c === "none" ? "Без групи" : `${c} курс`}
+                {g}
               </button>
             ))}
           </div>
+        )}
 
-          {/* Group sub-tabs */}
-          {groups.length > 1 && (
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400 mr-1">
-                Група:
-              </span>
-              {groups.map((g) => (
-                <button
-                  key={g}
-                  type="button"
-                  onClick={() => setActiveGroup(g)}
-                  className={tabClass(activeGroup === g)}
-                >
-                  {g === "none" ? "Без групи" : g}
-                </button>
-              ))}
-            </div>
-          )}
+        {/* Add course inline */}
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={newCourseName}
+            onChange={(e) => setNewCourseName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleCreateCourse()}
+            placeholder="Назва нового курсу..."
+            className="w-48 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-xs text-zinc-900 outline-none focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-50"
+          />
+          <button
+            type="button"
+            onClick={handleCreateCourse}
+            disabled={creatingCourse || !newCourseName.trim()}
+            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:bg-blue-400"
+          >
+            {creatingCourse ? "..." : "+ Курс"}
+          </button>
         </div>
-      )}
+      </div>
 
       <div className="grid gap-4 md:grid-cols-[280px,1fr]">
         {/* Student list */}
@@ -306,9 +464,12 @@ export default function TeacherStudentsPage() {
               const avgPct =
                 s.attempts.length > 0
                   ? s.attempts.reduce(
-                      (sum, a) => sum + (a.percentage != null ? Number(a.percentage) : 0),
+                      (sum, a) =>
+                        sum +
+                        (a.percentage != null ? Number(a.percentage) : 0),
                       0,
-                    ) / s.attempts.filter((a) => a.percentage != null).length
+                    ) /
+                    s.attempts.filter((a) => a.percentage != null).length
                   : null;
               return (
                 <button
@@ -324,7 +485,9 @@ export default function TeacherStudentsPage() {
                   <div className="min-w-0">
                     <div className="font-medium truncate">{name}</div>
                     <div className="truncate opacity-80 text-[11px]">
-                      {s.profile?.group ?? s.email}
+                      {s.profile?.courseName
+                        ? `${s.profile.courseName}${s.profile.group ? ` / ${s.profile.group}` : ""}`
+                        : s.profile?.group ?? s.email}
                     </div>
                   </div>
                   {avgPct != null && !isNaN(avgPct) && (
@@ -422,6 +585,23 @@ export default function TeacherStudentsPage() {
                   />
                 </div>
               </div>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                  Курс
+                </label>
+                <select
+                  value={courseId}
+                  onChange={(e) => setCourseId(e.target.value)}
+                  className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-900 outline-none ring-0 focus:border-blue-500 focus:ring-1 focus:ring-blue-200 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-50 dark:focus:border-blue-400 dark:focus:ring-blue-900/40"
+                >
+                  <option value="">-- Без курсу --</option>
+                  {courses.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <button
                 type="submit"
                 disabled={saving}
@@ -454,9 +634,14 @@ export default function TeacherStudentsPage() {
                     </thead>
                     <tbody>
                       {selectedStudent.attempts.map((a) => (
-                        <tr key={a.attemptId} className="border-t border-zinc-200 dark:border-zinc-800">
+                        <tr
+                          key={a.attemptId}
+                          className="border-t border-zinc-200 dark:border-zinc-800"
+                        >
                           <td className="px-3 py-1.5 align-top text-zinc-700 dark:text-zinc-200">
-                            {new Date(a.finishedAt ?? a.startedAt).toLocaleString()}
+                            {new Date(
+                              a.finishedAt ?? a.startedAt,
+                            ).toLocaleString()}
                           </td>
                           <td className="px-3 py-1.5 align-top text-zinc-800 dark:text-zinc-50">
                             {a.testName}
@@ -465,10 +650,14 @@ export default function TeacherStudentsPage() {
                             {a.token}
                           </td>
                           <td className="px-3 py-1.5 align-top text-zinc-800 dark:text-zinc-100">
-                            {a.totalScore != null ? Number(a.totalScore).toFixed(2) : "-"}
+                            {a.totalScore != null
+                              ? Number(a.totalScore).toFixed(2)
+                              : "-"}
                           </td>
                           <td className="px-3 py-1.5 align-top text-zinc-800 dark:text-zinc-100">
-                            {a.percentage != null ? Number(a.percentage).toFixed(1) : "-"}
+                            {a.percentage != null
+                              ? Number(a.percentage).toFixed(1)
+                              : "-"}
                           </td>
                         </tr>
                       ))}

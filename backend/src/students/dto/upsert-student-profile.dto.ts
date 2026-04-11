@@ -20,4 +20,8 @@ export class UpsertStudentProfileDto {
   @IsOptional()
   @IsString()
   group?: string;
+
+  @IsOptional()
+  @IsString()
+  courseId?: string;
 }

@@ -21,6 +21,7 @@ export class StudentsService {
         lastName: dto.lastName,
         middleName: dto.middleName,
         group: dto.group,
+        courseId: dto.courseId ?? null,
       },
       create: {
         teacherId,
@@ -29,15 +30,50 @@ export class StudentsService {
         lastName: dto.lastName,
         middleName: dto.middleName,
         group: dto.group,
+        courseId: dto.courseId,
       },
     });
 
     return profile;
   }
 
+  // ── Course CRUD ──
+
+  async listCourses(teacherId: string) {
+    return this.prisma.course.findMany({
+      where: { teacherId },
+      orderBy: { name: 'asc' },
+      include: { _count: { select: { studentProfiles: true } } },
+    });
+  }
+
+  async createCourse(teacherId: string, name: string) {
+    return this.prisma.course.create({
+      data: { teacherId, name },
+    });
+  }
+
+  async renameCourse(teacherId: string, courseId: string, name: string) {
+    return this.prisma.course.update({
+      where: { id: courseId, teacherId },
+      data: { name },
+    });
+  }
+
+  async deleteCourse(teacherId: string, courseId: string) {
+    // Unassign students first, then delete
+    await this.prisma.studentProfile.updateMany({
+      where: { teacherId, courseId },
+      data: { courseId: null },
+    });
+    return this.prisma.course.delete({
+      where: { id: courseId, teacherId },
+    });
+  }
+
   async listWithAttempts(teacherId: string) {
     const [profiles, attempts] = await this.prisma.$transaction([
-      this.prisma.studentProfile.findMany({ where: { teacherId } }),
+      this.prisma.studentProfile.findMany({ where: { teacherId }, include: { course: true } }),
       this.prisma.studentAttempt.findMany({
         where: {
           testRun: {
@@ -105,6 +141,8 @@ export class StudentsService {
               lastName: profile.lastName,
               middleName: profile.middleName,
               group: profile.group,
+              courseId: profile.courseId,
+              courseName: (profile as any).course?.name ?? null,
             }
           : null,
         attempts: attemptsView,
