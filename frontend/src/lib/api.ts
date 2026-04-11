@@ -79,10 +79,10 @@ export async function submitAnswers(
   });
 }
 
-export async function finishAttempt(attemptId: string) {
+export async function finishAttempt(attemptId: string, timePerQuestion?: Record<string, number>) {
   return request<unknown>(`/api/student/attempts/${attemptId}/finish`, {
     method: 'POST',
-    body: JSON.stringify({}),
+    body: JSON.stringify({ timePerQuestion }),
   });
 }
 

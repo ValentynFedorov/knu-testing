@@ -16,13 +16,15 @@ export async function POST(
   const backendToken = token?.backendToken as string | undefined;
   if (!backendToken) return new NextResponse("Unauthorized", { status: 401 });
 
+  const body = await req.json().catch(() => ({}));
+
   const res = await fetch(`${BACKEND_URL}/attempts/${attemptId}/finish`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${backendToken}`,
     },
-    body: JSON.stringify({}),
+    body: JSON.stringify(body),
   });
 
   const text = await res.text();

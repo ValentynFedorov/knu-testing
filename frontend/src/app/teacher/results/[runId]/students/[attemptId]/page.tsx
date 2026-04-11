@@ -1,8 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import LatexText from "@/lib/LatexText";
+import dynamic from "next/dynamic";
+
+const CodeEditor = dynamic(() => import("@/components/CodeEditor"), {
+  ssr: false,
+  loading: () => <div className="h-[200px] animate-pulse rounded-lg bg-zinc-800" />,
+});
 function resolveMediaUrl(url?: string | null) {
   if (!url) return null;
   if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("data:")) {
@@ -21,6 +27,7 @@ interface QuestionDetail {
   type: string;
   weight: number;
   options?: { id: string; label: string; value: string; imageUrl?: string | null }[];
+  gradingConfig?: { format?: string; language?: string } | null;
   maxScore: number;
   scoreAwarded: number | null;
   perQuestionTimeSec: number | null;
@@ -61,6 +68,89 @@ interface DetailResponse {
   };
   questions: QuestionDetail[];
   violations: ViolationLogRow[];
+}
+
+function ScoreEditor({
+  question,
+  runId,
+  attemptId,
+  onScoreUpdated,
+}: {
+  question: QuestionDetail;
+  runId: string;
+  attemptId: string;
+  onScoreUpdated: (attemptQuestionId: string, score: number, totalScore: number, percentage: number) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [scoreInput, setScoreInput] = useState(
+    String(question.scoreAwarded != null ? Number(question.scoreAwarded) : 0)
+  );
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    const score = parseFloat(scoreInput);
+    if (isNaN(score) || score < 0 || score > Number(question.maxScore)) return;
+    try {
+      setSaving(true);
+      const res = await fetch(
+        `/api/teacher/analytics/tests/${runId}/students/${attemptId}/questions/${question.attemptQuestionId}/score`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ score }),
+        }
+      );
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      onScoreUpdated(question.attemptQuestionId, data.scoreAwarded, data.totalScore, data.percentage);
+      setEditing(false);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <button
+        onClick={() => setEditing(true)}
+        className="text-[11px] text-blue-600 hover:underline dark:text-blue-400"
+        title="Змінити бал"
+      >
+        Бал: {question.scoreAwarded != null ? Number(question.scoreAwarded).toFixed(2) : 0}/{Number(question.maxScore).toFixed(2)}
+      </button>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1">
+      <input
+        type="number"
+        min={0}
+        max={Number(question.maxScore)}
+        step="0.01"
+        value={scoreInput}
+        onChange={(e) => setScoreInput(e.target.value)}
+        className="w-16 rounded border border-zinc-300 bg-white px-1 py-0.5 text-[11px] text-zinc-900 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-50"
+        autoFocus
+      />
+      <span className="text-[11px] text-zinc-400">/ {Number(question.maxScore).toFixed(2)}</span>
+      <button
+        onClick={handleSave}
+        disabled={saving}
+        className="rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-blue-700 disabled:bg-blue-400"
+      >
+        {saving ? "..." : "OK"}
+      </button>
+      <button
+        onClick={() => setEditing(false)}
+        className="text-[10px] text-zinc-400 hover:text-zinc-600"
+      >
+        X
+      </button>
+    </span>
+  );
 }
 
 function AnswerDisplay({ question, answer }: { question: QuestionDetail; answer: any }) {
@@ -125,6 +215,18 @@ function AnswerDisplay({ question, answer }: { question: QuestionDetail; answer:
   }
 
   if (question.type === "OPEN_TEXT") {
+    const gradingConfig = (question as any).gradingConfig;
+    if (gradingConfig?.format === "CODE") {
+      return (
+        <CodeEditor
+          value={answer.text ?? ""}
+          onChange={() => {}}
+          language={gradingConfig?.language ?? "python"}
+          readOnly
+          height="250px"
+        />
+      );
+    }
     return <div className="text-xs text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap">{answer.text}</div>;
   }
 
@@ -192,6 +294,24 @@ export default function StudentAttemptPage() {
     }
   }
 
+  const handleScoreUpdated = useCallback(
+    (attemptQuestionId: string, score: number, totalScore: number, percentage: number) => {
+      setData((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          result: { totalScore, percentage },
+          questions: prev.questions.map((q) =>
+            q.attemptQuestionId === attemptQuestionId
+              ? { ...q, scoreAwarded: score }
+              : q
+          ),
+        };
+      });
+    },
+    []
+  );
+
   if (!data && loading) {
     return (
       <p className="text-sm text-zinc-500 dark:text-zinc-400">Завантаження...</p>
@@ -249,9 +369,12 @@ export default function StudentAttemptPage() {
                   <span>
                     #{q.orderIndex + 1} · {q.type}
                   </span>
-                  <span>
-                    Бал: {q.scoreAwarded != null ? Number(q.scoreAwarded).toFixed(2) : 0}/{Number(q.maxScore).toFixed(2)}
-                  </span>
+                  <ScoreEditor
+                    question={q}
+                    runId={runId}
+                    attemptId={attemptId}
+                    onScoreUpdated={handleScoreUpdated}
+                  />
                 </div>
                 {q.imageUrl && (
                   <img

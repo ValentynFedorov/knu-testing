@@ -40,7 +40,9 @@ export class SubmitAnswersDto {
 }
 
 export class FinishAttemptDto {
-  // Reserved for future flags (e.g., manual submit reason)
+  @IsOptional()
+  @IsObject()
+  timePerQuestion?: Record<string, number>;
 }
 
 export class LogIntegrityEventDto {

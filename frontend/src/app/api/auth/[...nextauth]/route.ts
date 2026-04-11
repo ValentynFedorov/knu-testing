@@ -2,11 +2,7 @@ import NextAuth, { NextAuthOptions } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import jwt from "jsonwebtoken";
 
-const TEACHERS_WHITELIST = (process.env.TEACHERS_WHITELIST || "")
-  .split(",")
-  .map((e) => e.trim().toLowerCase())
-  .filter(Boolean);
-
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4000";
 const BACKEND_JWT_SECRET = process.env.NEXTAUTH_SECRET || "fallback-secret";
 
 export const authOptions: NextAuthOptions = {
@@ -15,11 +11,9 @@ export const authOptions: NextAuthOptions = {
       name: "KNU Account",
       credentials: {
         email: { label: "Корпоративна пошта", type: "text" },
-        role: { label: "Роль", type: "text" }, // TEACHER or STUDENT
       },
       async authorize(credentials) {
         const emailRaw = credentials?.email?.toString().toLowerCase();
-        let roleInput = credentials?.role?.toString().toUpperCase();
 
         if (!emailRaw || !emailRaw.endsWith("@knu.ua")) {
           throw new Error("Email повинен бути в домені @knu.ua");
@@ -41,14 +35,20 @@ export const authOptions: NextAuthOptions = {
           derivedName = emailRaw;
         }
 
+        // Check role from backend DB
         let role: "TEACHER" | "STUDENT" = "STUDENT";
-        if (roleInput === "TEACHER") {
-          if (!TEACHERS_WHITELIST.length || TEACHERS_WHITELIST.includes(emailRaw)) {
-            role = "TEACHER";
-          } else {
-            // якщо не в whitelist, примусово STUDENT
-            role = "STUDENT";
+        try {
+          const res = await fetch(
+            `${BACKEND_URL}/auth/check-role?email=${encodeURIComponent(emailRaw)}`
+          );
+          if (res.ok) {
+            const data = await res.json();
+            if (data.role === "TEACHER") {
+              role = "TEACHER";
+            }
           }
+        } catch {
+          // If backend is unreachable, default to STUDENT
         }
 
         return {
@@ -94,6 +94,9 @@ export const authOptions: NextAuthOptions = {
       }
       return session;
     },
+  },
+  pages: {
+    signIn: "/login",
   },
   secret: process.env.NEXTAUTH_SECRET,
 };

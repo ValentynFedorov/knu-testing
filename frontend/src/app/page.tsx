@@ -9,7 +9,7 @@ export default async function Home() {
 
   if (!session) {
     // Спочатку вхід через корпоративну пошту
-    redirect("/api/auth/signin");
+    redirect("/login");
   }
 
   if (role === "TEACHER") {

@@ -12,7 +12,7 @@ type QuestionType =
   | "MATCHING"
   | "GAP_TEXT";
 
-type OpenTextFormat = "SHORT_TEXT" | "LONG_TEXT" | "NUMBER";
+type OpenTextFormat = "SHORT_TEXT" | "LONG_TEXT" | "NUMBER" | "CODE";
 type TextMatchMode = "EXACT" | "CASE_INSENSITIVE" | "CONTAINS" | "REGEX";
 
 interface GapItem {
@@ -89,6 +89,7 @@ export default function QuestionBankPage() {
   ]);
   // Open text grading config
   const [openTextFormat, setOpenTextFormat] = useState<OpenTextFormat>("SHORT_TEXT");
+  const [codeLanguage, setCodeLanguage] = useState("python");
   const [openTextMatchingMode, setOpenTextMatchingMode] = useState<TextMatchMode>("EXACT");
   const [openTextExpected, setOpenTextExpected] = useState<string[]>([""]);
   // Gap text config
@@ -416,6 +417,7 @@ export default function QuestionBankPage() {
       { left: "", right: "" },
     ]);
     setOpenTextFormat("SHORT_TEXT");
+    setCodeLanguage("python");
     setOpenTextMatchingMode("EXACT");
     setOpenTextExpected([""]);
     setGapItems([{ id: "gap1", mode: "TEXT", options: "", correctAnswers: "", matchingMode: "EXACT" }]);
@@ -572,6 +574,7 @@ export default function QuestionBankPage() {
         format: openTextFormat,
         matchingMode: openTextMatchingMode,
         expectedAnswers,
+        ...(openTextFormat === "CODE" ? { language: codeLanguage } : {}),
       };
     } else if (qType === "GAP_TEXT") {
       const gaps = gapItems
@@ -1306,61 +1309,92 @@ className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs
                         <option value="SHORT_TEXT">Короткий текст</option>
                         <option value="LONG_TEXT">Довгий текст</option>
                         <option value="NUMBER">Число</option>
+                        <option value="CODE">Код</option>
                       </select>
                     </div>
-                    <div>
-                      <label className="mb-1 block text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
-                        Режим перевірки
-                      </label>
-                      <select
-                        value={openTextMatchingMode}
-                        onChange={(e) => setOpenTextMatchingMode(e.target.value as TextMatchMode)}
-                        className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
-                      >
-                        <option value="EXACT">Точний збіг</option>
-                        <option value="CASE_INSENSITIVE">Без урахування регістру</option>
-                        <option value="CONTAINS">Містить</option>
-                        <option value="REGEX">Регулярний вираз</option>
-                      </select>
-                    </div>
+                    {openTextFormat === "CODE" && (
+                      <div>
+                        <label className="mb-1 block text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
+                          Мова програмування
+                        </label>
+                        <select
+                          value={codeLanguage}
+                          onChange={(e) => setCodeLanguage(e.target.value)}
+                          className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+                        >
+                          <option value="python">Python</option>
+                          <option value="javascript">JavaScript</option>
+                          <option value="typescript">TypeScript</option>
+                          <option value="java">Java</option>
+                          <option value="cpp">C++</option>
+                          <option value="c">C</option>
+                        </select>
+                      </div>
+                    )}
+                    {openTextFormat !== "CODE" && (
+                      <div>
+                        <label className="mb-1 block text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
+                          Режим перевірки
+                        </label>
+                        <select
+                          value={openTextMatchingMode}
+                          onChange={(e) => setOpenTextMatchingMode(e.target.value as TextMatchMode)}
+                          className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+                        >
+                          <option value="EXACT">Точний збіг</option>
+                          <option value="CASE_INSENSITIVE">Без урахування регістру</option>
+                          <option value="CONTAINS">Містить</option>
+                          <option value="REGEX">Регулярний вираз</option>
+                        </select>
+                      </div>
+                    )}
                   </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
-                      Правильні відповіді (можна кілька)
-                    </label>
-                    <div className="space-y-1">
-                      {openTextExpected.map((val, idx) => (
-                        <div key={idx} className="flex items-center gap-2">
-                          <input
-                            type="text"
-                            value={val}
-                            onChange={(e) => updateOpenTextExpected(idx, e.target.value)}
-                            className="flex-1 rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
-                            placeholder="Варіант правильної відповіді"
-                          />
-                          {openTextExpected.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => removeOpenTextExpected(idx)}
-                              className="text-red-500 hover:text-red-700 text-xs"
-                            >
-                              ✕
-                            </button>
-                          )}
+                  {openTextFormat !== "CODE" && (
+                    <>
+                      <div>
+                        <label className="mb-1 block text-[11px] font-medium text-zinc-600 dark:text-zinc-300">
+                          Правильні відповіді (можна кілька)
+                        </label>
+                        <div className="space-y-1">
+                          {openTextExpected.map((val, idx) => (
+                            <div key={idx} className="flex items-center gap-2">
+                              <input
+                                type="text"
+                                value={val}
+                                onChange={(e) => updateOpenTextExpected(idx, e.target.value)}
+                                className="flex-1 rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+                                placeholder="Варіант правильної відповіді"
+                              />
+                              {openTextExpected.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => removeOpenTextExpected(idx)}
+                                  className="text-red-500 hover:text-red-700 text-xs"
+                                >
+                                  ✕
+                                </button>
+                              )}
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={addOpenTextExpected}
-                      className="mt-2 text-xs text-blue-600 hover:underline dark:text-blue-400"
-                    >
-                      + Додати відповідь
-                    </button>
-                  </div>
-                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                    Якщо список правильних відповідей порожній — перевірка буде ручною.
-                  </p>
+                        <button
+                          type="button"
+                          onClick={addOpenTextExpected}
+                          className="mt-2 text-xs text-blue-600 hover:underline dark:text-blue-400"
+                        >
+                          + Додати відповідь
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                        Якщо список правильних відповідей порожній — перевірка буде ручною.
+                      </p>
+                    </>
+                  )}
+                  {openTextFormat === "CODE" && (
+                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                      Студент отримає редактор коду з підсвіткою синтаксису. Перевірка — ручна.
+                    </p>
+                  )}
                 </div>
               )}
 

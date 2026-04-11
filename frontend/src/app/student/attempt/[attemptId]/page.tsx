@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   BackendAttempt,
@@ -11,6 +11,14 @@ import {
   submitAnswers,
 } from "@/lib/api";
 import LatexText from "@/lib/LatexText";
+import dynamic from "next/dynamic";
+
+const CodeEditor = dynamic(() => import("@/components/CodeEditor"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-[300px] animate-pulse rounded-lg bg-zinc-800" />
+  ),
+});
 
 function resolveMediaUrl(url?: string | null) {
   if (!url) return null;
@@ -316,10 +324,15 @@ export default function AttemptPage() {
   // Locked (timed-out) questions by attemptQuestionId
   const [lockedQuestions, setLockedQuestions] = useState<Record<string, boolean>>({});
 
+  // Per-question time tracking
+  const timePerQuestion = useRef<Record<string, number>>({});
+  const questionEnteredAt = useRef<number | null>(null);
+
   // Media / consent state
   const [consentChecked, setConsentChecked] = useState(false);
   const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
+  const [hasCameraDevice, setHasCameraDevice] = useState<boolean | null>(null);
 
   // Fullscreen enforcement state
   const [fullscreenLost, setFullscreenLost] = useState(false);
@@ -367,6 +380,25 @@ export default function AttemptPage() {
     };
   }, [attemptId]);
 
+  // Detect if a physical camera is available
+  useEffect(() => {
+    async function checkCamera() {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const hasCamera = devices.some((d) => d.kind === "videoinput");
+        setHasCameraDevice(hasCamera);
+        if (!hasCamera) {
+          // Auto-check consent since camera step will be skipped
+          setConsentChecked(true);
+        }
+      } catch {
+        setHasCameraDevice(false);
+        setConsentChecked(true);
+      }
+    }
+    checkCamera();
+  }, []);
+
   async function requestMediaPermissions() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -376,8 +408,13 @@ export default function AttemptPage() {
       setMediaStream(stream);
       setMediaError(null);
       return stream;
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to get media permissions", err);
+      // If camera is physically unavailable or busy, skip the step
+      if (err?.name === "NotReadableError" || err?.name === "NotFoundError") {
+        setMediaError(null);
+        return null;
+      }
       setMediaError(
         "Потрібен доступ до камери та мікрофона для проходження тесту.",
       );
@@ -519,18 +556,21 @@ export default function AttemptPage() {
   async function startTest() {
     if (!attempt) return;
     if (isExam) {
-      if (!consentChecked) {
+      if (hasCameraDevice && !consentChecked) {
         setError("Поставте позначку згоди на використання камери та мікрофона.");
         return;
       }
 
-      try {
-        if (!mediaStream) {
-          await requestMediaPermissions();
+      // Only request camera/mic if a physical camera is present
+      if (hasCameraDevice) {
+        try {
+          if (!mediaStream) {
+            await requestMediaPermissions();
+          }
+        } catch {
+          // Якщо немає доступу до медіа — не стартуємо тест
+          return;
         }
-      } catch {
-        // Якщо немає доступу до медіа — не стартуємо тест
-        return;
       }
 
       // Request fullscreen (жест користувача — клік по кнопці)
@@ -547,6 +587,7 @@ export default function AttemptPage() {
     }
 
     setHasStarted(true);
+    questionEnteredAt.current = Date.now();
     // Initialize question timer
     const first = attempt.questions[0];
     setQuestionRemaining(first?.perQuestionTimeSec ?? null);
@@ -583,6 +624,14 @@ export default function AttemptPage() {
     setAnswers((prev) => ({ ...prev, [currentQuestion.id]: value }));
   }
 
+  function flushQuestionTime() {
+    if (questionEnteredAt.current == null || !currentQuestion) return;
+    const elapsed = Math.round((Date.now() - questionEnteredAt.current) / 1000);
+    const qId = currentQuestion.id;
+    timePerQuestion.current[qId] = (timePerQuestion.current[qId] ?? 0) + elapsed;
+    questionEnteredAt.current = Date.now();
+  }
+
   async function persistCurrentAnswer() {
     if (!currentQuestion) return;
     const payload = answers[currentQuestion.id];
@@ -616,22 +665,26 @@ export default function AttemptPage() {
   }
 
   async function handleNext() {
+    flushQuestionTime();
     await persistCurrentAnswer();
     setError(null);
     if (!attempt) return;
     const nextIndex = findNextIndex(1, currentIndex);
-    if (nextIndex === currentIndex) return; // no more доступних питань
+    if (nextIndex === currentIndex) return;
     setCurrentIndex(nextIndex);
+    questionEnteredAt.current = Date.now();
     const nextQ = attempt.questions[nextIndex];
     setQuestionRemaining(nextQ?.perQuestionTimeSec ?? null);
   }
 
   async function handlePrev() {
     if (!attempt || !allowBack) return;
+    flushQuestionTime();
     await persistCurrentAnswer();
     const prevIndex = findNextIndex(-1, currentIndex);
     if (prevIndex === currentIndex) return;
     setCurrentIndex(prevIndex);
+    questionEnteredAt.current = Date.now();
     const prevQ = attempt.questions[prevIndex];
     setQuestionRemaining(prevQ?.perQuestionTimeSec ?? null);
   }
@@ -646,8 +699,9 @@ export default function AttemptPage() {
     }
     setFinishing(true);
     try {
+      flushQuestionTime();
       await persistCurrentAnswer();
-      await finishAttempt(attemptId);
+      await finishAttempt(attemptId, timePerQuestion.current);
       if (attempt?.showResultToStudent) {
         router.push(`/student/finished?attemptId=${attemptId}`);
       } else {
@@ -704,7 +758,7 @@ export default function AttemptPage() {
                 </li>
               )}
               <li>Деякі питання можуть мати окремий ліміт часу.</li>
-              {isExam && (
+              {isExam && hasCameraDevice && (
                 <li>
                   Під час тесту буде ввімкнено камеру та мікрофон; відео і голос
                   можуть бути записані для запобігання недобросовісному
@@ -713,7 +767,7 @@ export default function AttemptPage() {
               )}
             </ul>
           </div>
-          {isExam && (
+          {isExam && hasCameraDevice && (
             <div className="space-y-2 rounded-xl bg-zinc-50 p-3 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
               <label className="flex items-start gap-2">
                 <input
@@ -736,7 +790,7 @@ export default function AttemptPage() {
           )}
           <button
             onClick={startTest}
-            disabled={isExam && !consentChecked}
+            disabled={isExam && hasCameraDevice === true && !consentChecked}
             className="w-full rounded-xl bg-blue-600 px-6 py-3 text-base font-semibold text-white shadow-md transition hover:bg-blue-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-blue-400"
           >
             Розпочати тест
@@ -972,11 +1026,23 @@ function QuestionView({ question, value, onChange }: QuestionViewProps) {
         </div>
       )}
       {q.type === "OPEN_TEXT" && (() => {
-        const format = (q as any).gradingConfig?.format as
+        const gradingConfig = (q as any).gradingConfig;
+        const format = gradingConfig?.format as
           | "SHORT_TEXT"
           | "LONG_TEXT"
           | "NUMBER"
+          | "CODE"
           | undefined;
+        if (format === "CODE") {
+          return (
+            <CodeEditor
+              value={(value as any)?.text ?? ""}
+              onChange={(text) => onChange({ text })}
+              language={gradingConfig?.language ?? "python"}
+              height="350px"
+            />
+          );
+        }
         if (format === "SHORT_TEXT" || format === "NUMBER") {
           return (
             <input

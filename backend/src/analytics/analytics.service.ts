@@ -201,7 +201,7 @@ export class AnalyticsService {
         questions: {
           include: {
             question: {
-              include: { options: true },
+              include: { options: true, gradingKey: true },
             },
             answers: true,
           },
@@ -231,7 +231,8 @@ export class AnalyticsService {
         imageUrl: aq.question.imageUrl,
         type: aq.question.type,
         weight: aq.question.weight,
-        options: aq.question.options, // Pass options to frontend
+        options: aq.question.options,
+        gradingConfig: aq.question.gradingKey?.autoGradingConfig ?? null,
         maxScore: aq.maxScore,
         scoreAwarded: aq.scoreAwarded,
         perQuestionTimeSec: aq.perQuestionTimeSec,
@@ -279,6 +280,72 @@ export class AnalyticsService {
       },
       questions,
       violations: violationsLog,
+    };
+  }
+
+  /**
+   * 10.4. Ручне оцінювання відповіді викладачем
+   */
+  async updateQuestionScore(
+    teacherId: string,
+    runId: string,
+    attemptId: string,
+    attemptQuestionId: string,
+    score: number,
+  ) {
+    // Verify ownership
+    const aq = await this.prisma.attemptQuestion.findUnique({
+      where: { id: attemptQuestionId },
+      include: {
+        attempt: {
+          include: {
+            testRun: { include: { test: true } },
+          },
+        },
+      },
+    });
+
+    if (!aq || aq.attemptId !== attemptId || aq.attempt.testRunId !== runId) {
+      throw new Error('Question not found');
+    }
+    if (aq.attempt.testRun.test.teacherId !== teacherId) {
+      throw new Error('Forbidden');
+    }
+
+    const maxScore = Number(aq.maxScore);
+    const clampedScore = Math.max(0, Math.min(score, maxScore));
+
+    // Update the question score
+    await this.prisma.attemptQuestion.update({
+      where: { id: attemptQuestionId },
+      data: { scoreAwarded: clampedScore },
+    });
+
+    // Recalculate attempt totals
+    const allQuestions = await this.prisma.attemptQuestion.findMany({
+      where: { attemptId },
+      select: { scoreAwarded: true, maxScore: true },
+    });
+
+    const totalScore = allQuestions.reduce(
+      (sum, q) => sum + Number(q.scoreAwarded ?? 0),
+      0,
+    );
+    const maxTotal = allQuestions.reduce(
+      (sum, q) => sum + Number(q.maxScore),
+      0,
+    );
+    const percentage = maxTotal > 0 ? (totalScore / maxTotal) * 100 : 0;
+
+    await this.prisma.studentAttempt.update({
+      where: { id: attemptId },
+      data: { totalScore, percentage },
+    });
+
+    return {
+      scoreAwarded: clampedScore,
+      totalScore,
+      percentage,
     };
   }
 
