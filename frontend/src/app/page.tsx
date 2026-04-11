@@ -8,8 +8,7 @@ export default async function Home() {
   const role = (session?.user as any)?.role as string | undefined;
 
   if (!session) {
-    // Спочатку вхід через корпоративну пошту
-    redirect("/api/auth/signin");
+    redirect("/login");
   }
 
   if (role === "TEACHER") {

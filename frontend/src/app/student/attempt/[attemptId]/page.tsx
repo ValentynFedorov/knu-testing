@@ -550,11 +550,6 @@ export default function AttemptPage() {
     // Initialize question timer
     const first = attempt.questions[0];
     setQuestionRemaining(first?.perQuestionTimeSec ?? null);
-
-    // Request fullscreen
-    document.documentElement.requestFullscreen().catch((err) => {
-      console.error("Error attempting to enable fullscreen:", err);
-    });
   }
 
   // Global and per-question timers (client-side approximation)
@@ -567,9 +562,38 @@ export default function AttemptPage() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [attempt, hasStarted]);
+  }, [attempt, hasStarted, fullscreenLost]);
 
-  // When пер-question timer hits 0, lock поточне питання і перейти далі
+  // When global timer hits 0 — auto-submit the attempt
+  useEffect(() => {
+    if (globalRemaining !== 0 || !hasStarted || finishing || !attempt) return;
+    setFinishing(true);
+    (async () => {
+      try {
+        if (currentQuestion) {
+          const payload = answers[currentQuestion.id];
+          if (payload !== undefined) {
+            await submitAnswers(attemptId, [
+              { attemptQuestionId: currentQuestion.id, answerPayload: payload },
+            ]).catch(console.error);
+          }
+        }
+        await finishAttempt(attemptId);
+        if (attempt.showResultToStudent) {
+          router.push(`/student/finished?attemptId=${attemptId}`);
+        } else {
+          router.push("/student/finished");
+        }
+      } catch (err) {
+        console.error(err);
+        setError("Час вийшов. Не вдалося завершити тест.");
+        setFinishing(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [globalRemaining]);
+
+  // When per-question timer hits 0, lock поточне питання і перейти далі
   useEffect(() => {
     if (questionRemaining === 0 && currentQuestion && !lockedQuestions[currentQuestion.id]) {
       setLockedQuestions((prev) => ({ ...prev, [currentQuestion.id]: true }));

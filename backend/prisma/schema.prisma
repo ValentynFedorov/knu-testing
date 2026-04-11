@@ -261,3 +261,9 @@ model AuditLog {
   createdAt   DateTime @default(now())
   details     Json?
 }
+
+model TeacherWhitelist {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  createdAt DateTime @default(now())
+}

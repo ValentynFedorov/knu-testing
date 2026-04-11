@@ -39,6 +39,7 @@ interface StudentRow {
     fullscreenExit: boolean;
     tabSwitch: boolean;
     pasteDetection: boolean;
+    screenshot: boolean;
   };
 }
 
@@ -188,7 +189,8 @@ export default function RunDashboardPage() {
                     {" "}
                     {s.indicators.fullscreenExit && "FS "}
                     {s.indicators.tabSwitch && "TAB "}
-                    {s.indicators.pasteDetection && "PASTE"}
+                    {s.indicators.pasteDetection && "PASTE "}
+                    {s.indicators.screenshot && "SCREEN"}
                   </td>
                 </tr>
               ))}
