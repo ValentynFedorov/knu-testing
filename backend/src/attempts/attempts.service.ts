@@ -348,7 +348,7 @@ export class AttemptsService {
     return { ok: true };
   }
 
-  async finishAttempt(studentId: string, attemptId: string) {
+  async finishAttempt(studentId: string, attemptId: string, timePerQuestion?: Record<string, number>) {
     const attempt = await this.prisma.studentAttempt.findUnique({
       where: { id: attemptId },
       include: {
@@ -544,11 +544,16 @@ export class AttemptsService {
 
     const percentage = maxTotal > 0 ? (totalScore / maxTotal) * 100 : 0;
 
-    // Persist per-question scores for analytics UI
+    // Persist per-question scores and time for analytics UI
     for (const { id, score } of perQuestionScores) {
       await this.prisma.attemptQuestion.update({
         where: { id },
-        data: { scoreAwarded: score },
+        data: {
+          scoreAwarded: score,
+          ...(timePerQuestion?.[id] != null
+            ? { timeSpentSec: Math.round(timePerQuestion[id]) }
+            : {}),
+        },
       });
     }
     const totalTimeSec = attempt.startedAt

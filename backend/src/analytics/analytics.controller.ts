@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Patch, Param, Body, Req, UseGuards } from '@nestjs/common';
 import { AnalyticsService } from './analytics.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
@@ -30,6 +30,24 @@ export class AnalyticsController {
       req.user.id,
       runId,
       attemptId,
+    );
+  }
+
+  // 10.4. Ручне оцінювання відповіді
+  @Patch('tests/:runId/students/:attemptId/questions/:attemptQuestionId/score')
+  updateQuestionScore(
+    @Req() req: any,
+    @Param('runId') runId: string,
+    @Param('attemptId') attemptId: string,
+    @Param('attemptQuestionId') attemptQuestionId: string,
+    @Body() body: { score: number },
+  ) {
+    return this.analyticsService.updateQuestionScore(
+      req.user.id,
+      runId,
+      attemptId,
+      attemptQuestionId,
+      body.score,
     );
   }
 }

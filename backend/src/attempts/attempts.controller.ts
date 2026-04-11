@@ -33,7 +33,7 @@ export class AttemptsController {
   }
 
   @Post(':id/finish')
-  finish(@Req() req: any, @Param('id') id: string, @Body() _dto: FinishAttemptDto) {
-    return this.attemptsService.finishAttempt(req.user.id, id);
+  finish(@Req() req: any, @Param('id') id: string, @Body() dto: FinishAttemptDto) {
+    return this.attemptsService.finishAttempt(req.user.id, id, dto.timePerQuestion);
   }
 }

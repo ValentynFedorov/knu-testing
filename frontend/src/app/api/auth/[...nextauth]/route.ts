@@ -2,29 +2,15 @@ import NextAuth, { NextAuthOptions } from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import jwt from "jsonwebtoken";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4000";
 const BACKEND_JWT_SECRET = process.env.NEXTAUTH_SECRET || "fallback-secret";
-
-async function checkIsTeacher(email: string): Promise<boolean> {
-  if (!BACKEND_URL) return false;
-  try {
-    const res = await fetch(
-      `${BACKEND_URL}/admin/is-teacher?email=${encodeURIComponent(email)}`,
-    );
-    if (!res.ok) return false;
-    const data = await res.json();
-    return data.isTeacher === true;
-  } catch {
-    return false;
-  }
-}
 
 export const authOptions: NextAuthOptions = {
   providers: [
     Credentials({
       name: "KNU Account",
       credentials: {
-        email: { label: "Корпоративна пошта (@knu.ua)", type: "text" },
+        email: { label: "Корпоративна пошта", type: "text" },
       },
       async authorize(credentials) {
         const emailRaw = credentials?.email?.toString().toLowerCase().trim();
@@ -49,9 +35,21 @@ export const authOptions: NextAuthOptions = {
           derivedName = emailRaw;
         }
 
-        // Check the database whitelist to determine role
-        const isTeacher = await checkIsTeacher(emailRaw);
-        const role: "TEACHER" | "STUDENT" = isTeacher ? "TEACHER" : "STUDENT";
+        // Check role from backend DB
+        let role: "TEACHER" | "STUDENT" = "STUDENT";
+        try {
+          const res = await fetch(
+            `${BACKEND_URL}/auth/check-role?email=${encodeURIComponent(emailRaw)}`
+          );
+          if (res.ok) {
+            const data = await res.json();
+            if (data.role === "TEACHER") {
+              role = "TEACHER";
+            }
+          }
+        } catch {
+          // If backend is unreachable, default to STUDENT
+        }
 
         return {
           id: emailRaw,

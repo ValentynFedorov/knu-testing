@@ -2,40 +2,49 @@
 
 import { FormEvent, useState } from "react";
 import { signIn } from "next-auth/react";
+import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 
 export default function LoginPage() {
+  const searchParams = useSearchParams();
+  const callbackUrl = searchParams.get("callbackUrl") || "/";
+  const authError = searchParams.get("error");
+
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(
+    authError === "CredentialsSignin"
+      ? "Email повинен бути в домені @knu.ua"
+      : null
+  );
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    const trimmed = email.trim().toLowerCase();
 
-    if (!trimmed) {
-      setError("Введіть email");
+    if (!email.trim()) {
+      setError("Введіть корпоративну пошту");
       return;
     }
-    if (!trimmed.endsWith("@knu.ua")) {
+
+    if (!email.trim().endsWith("@knu.ua")) {
       setError("Email повинен бути в домені @knu.ua");
       return;
     }
 
-    setLoading(true);
     try {
+      setLoading(true);
       const result = await signIn("credentials", {
-        email: trimmed,
-        redirect: false,
+        email: email.trim(),
+        callbackUrl,
+        redirect: true,
       });
 
       if (result?.error) {
         setError("Не вдалося увійти. Перевірте email.");
-      } else if (result?.ok) {
-        window.location.href = "/";
       }
     } catch {
-      setError("Помилка з'єднання з сервером");
+      setError("Помилка при вході. Спробуйте ще раз.");
     } finally {
       setLoading(false);
     }
@@ -48,9 +57,8 @@ export default function LoginPage() {
           KNU Online Testing
         </h1>
         <p className="mb-6 text-center text-sm text-zinc-500 dark:text-zinc-400">
-          Увійдіть з корпоративною поштою
+          Увійдіть за допомогою корпоративної пошти.
         </p>
-
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
@@ -65,13 +73,11 @@ export default function LoginPage() {
               autoFocus
             />
           </div>
-
           {error && (
             <p className="text-sm text-red-500" role="alert">
               {error}
             </p>
           )}
-
           <button
             type="submit"
             disabled={loading}
@@ -80,9 +86,11 @@ export default function LoginPage() {
             {loading ? "Вхід..." : "Увійти"}
           </button>
         </form>
-
-        <p className="mt-4 text-center text-xs text-zinc-400 dark:text-zinc-500">
-          Роль визначається автоматично
+        <p className="mt-4 text-center text-sm text-zinc-500 dark:text-zinc-400">
+          Ви викладач?{" "}
+          <Link href="/register" className="text-blue-600 hover:underline dark:text-blue-400">
+            Зареєструватися
+          </Link>
         </p>
       </main>
     </div>
