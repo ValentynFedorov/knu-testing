@@ -81,7 +81,7 @@ function GapQuestionView({ text, gapSchema, value, onChange }: GapQuestionViewPr
     onChange({ gaps: next });
   }
 
-  const parts: Array<JSX.Element | string> = [];
+  const parts: Array<React.ReactNode> = [];
   const regex = /\[\[(.+?)\]\]/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
