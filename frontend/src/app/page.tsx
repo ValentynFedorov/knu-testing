@@ -1,20 +1,34 @@
-import { redirect } from "next/navigation";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+"use client";
+
+import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 import StudentHome from "./student-home";
 
-export default async function Home() {
-  const session = await getServerSession(authOptions);
+export default function Home() {
+  const { data: session, status } = useSession();
+  const router = useRouter();
   const role = (session?.user as any)?.role as string | undefined;
 
-  if (!session) {
-    redirect("/login");
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      router.replace("/login");
+    } else if (status === "authenticated" && role === "TEACHER") {
+      router.replace("/teacher/question-bank");
+    }
+  }, [status, role, router]);
+
+  if (status === "loading") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
+        <p className="text-zinc-500">Завантаження...</p>
+      </div>
+    );
   }
 
-  if (role === "TEACHER") {
-    redirect("/teacher/question-bank");
+  if (status === "authenticated" && role !== "TEACHER") {
+    return <StudentHome />;
   }
 
-  // STUDENT
-  return <StudentHome />;
+  return null;
 }
