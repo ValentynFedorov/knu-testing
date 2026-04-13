@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 
 interface StudentResult {
@@ -10,7 +10,7 @@ interface StudentResult {
   totalTimeSec: number | null;
 }
 
-export default function FinishedPage() {
+function FinishedContent() {
   const params = useSearchParams();
   const attemptId = params.get("attemptId");
   const [result, setResult] = useState<StudentResult | null>(null);
@@ -85,5 +85,13 @@ export default function FinishedPage() {
         </p>
       </main>
     </div>
+  );
+}
+
+export default function FinishedPage() {
+  return (
+    <Suspense>
+      <FinishedContent />
+    </Suspense>
   );
 }
