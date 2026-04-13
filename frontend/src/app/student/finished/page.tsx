@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { useEffect, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 
 interface StudentResult {
@@ -90,13 +90,7 @@ function FinishedContent() {
 
 export default function FinishedPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">Завантаження...</p>
-        </div>
-      }
-    >
+    <Suspense>
       <FinishedContent />
     </Suspense>
   );
