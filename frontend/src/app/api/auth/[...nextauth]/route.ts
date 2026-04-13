@@ -152,6 +152,7 @@ export const authOptions: NextAuthOptions = {
       options: { httpOnly: true, sameSite: "lax", path: "/", secure: false },
     },
   },
+  trustHost: true,
   secret: process.env.NEXTAUTH_SECRET,
 };
 
