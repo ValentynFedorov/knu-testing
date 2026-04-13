@@ -267,6 +267,12 @@ model StudentProfile {
   @@unique([teacherId, email])
 }
 
+model TeacherWhitelist {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  createdAt DateTime @default(now())
+}
+
 model AuditLog {
   id          String   @id @default(cuid())
   user        User?    @relation(fields: [userId], references: [id])
