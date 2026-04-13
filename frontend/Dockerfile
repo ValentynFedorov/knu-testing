@@ -16,7 +16,8 @@ RUN cp node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm public/ && 
 ARG NEXT_PUBLIC_BACKEND_URL
 ENV NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL}
 
-RUN npm run build -- --no-lint
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN npm run build
 
 # --- Production ---
 FROM node:20-alpine
