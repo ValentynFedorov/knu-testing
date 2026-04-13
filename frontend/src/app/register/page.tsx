@@ -4,9 +4,6 @@ import { FormEvent, useState } from "react";
 import { signIn } from "next-auth/react";
 import Link from "next/link";
 
-const BACKEND_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4000";
-
 export default function RegisterPage() {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
@@ -29,7 +26,7 @@ export default function RegisterPage() {
 
     try {
       setLoading(true);
-      const res = await fetch(`${BACKEND_URL}/auth/register-teacher`, {
+      const res = await fetch(`/api/auth/register-teacher`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: email.trim() }),
