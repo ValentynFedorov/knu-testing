@@ -1012,7 +1012,7 @@ className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs
                               updated[idx].value = e.target.value;
                               setQOptions(updated);
                             }}
-                            ref={(el) => (optionRefs.current[idx] = el)}
+                            ref={(el) => { optionRefs.current[idx] = el; }}
                             onPaste={async (e) => {
                               const handledImage = await handleImagePaste(e, (file) =>
                                 handleOptionImageFile(idx, file),
