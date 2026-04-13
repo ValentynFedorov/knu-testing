@@ -134,6 +134,7 @@ export const authOptions: NextAuthOptions = {
     signIn: "/login",
     error: "/login",
   },
+  useSecureCookies: false,
   cookies: {
     csrfToken: {
       name: "next-auth.csrf-token",
@@ -152,7 +153,6 @@ export const authOptions: NextAuthOptions = {
       options: { httpOnly: true, sameSite: "lax", path: "/", secure: false },
     },
   },
-  trustHost: true,
   secret: process.env.NEXTAUTH_SECRET,
 };
 
