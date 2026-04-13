@@ -11,7 +11,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { AuthModule } from './auth/auth.module';
 import { StudentsModule } from './students/students.module';
 import { MediaModule } from './media/media.module';
-import { AdminModule } from './admin/admin.module';
+import { CodeRunnerModule } from './code-runner/code-runner.module';
 
 @Module({
   imports: [
@@ -25,7 +25,7 @@ import { AdminModule } from './admin/admin.module';
     AnalyticsModule,
     StudentsModule,
     MediaModule,
-    AdminModule,
+    CodeRunnerModule,
   ],
   controllers: [AppController],
   providers: [AppService],
