@@ -605,11 +605,6 @@ export default function AttemptPage() {
     // Initialize question timer
     const first = attempt.questions[0];
     setQuestionRemaining(first?.perQuestionTimeSec ?? null);
-
-    // Request fullscreen
-    document.documentElement.requestFullscreen().catch((err) => {
-      console.error("Error attempting to enable fullscreen:", err);
-    });
   }
 
   // Global and per-question timers (client-side approximation)
@@ -1049,11 +1044,10 @@ function QuestionView({ question, value, onChange }: QuestionViewProps) {
           | undefined;
         if (format === "CODE") {
           return (
-            <CodeEditor
-              value={(value as any)?.text ?? ""}
-              onChange={(text) => onChange({ text })}
+            <CodeWithTerminal
+              code={(value as any)?.text ?? ""}
+              onCodeChange={(text) => onChange({ text })}
               language={gradingConfig?.language ?? "python"}
-              height="350px"
             />
           );
         }
@@ -1105,6 +1099,138 @@ interface MatchingQuestionViewProps {
   matchingSchema: Record<string, string>;
   value: unknown;
   onChange: (value: unknown) => void;
+}
+
+// ── Code editor with built-in terminal ──
+
+function CodeWithTerminal({
+  code,
+  onCodeChange,
+  language,
+}: {
+  code: string;
+  onCodeChange: (text: string) => void;
+  language: string;
+}) {
+  const [output, setOutput] = useState<{
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+    timedOut: boolean;
+  } | null>(null);
+  const [running, setRunning] = useState(false);
+  const [stdin, setStdin] = useState("");
+  const [showStdin, setShowStdin] = useState(false);
+
+  async function handleRun() {
+    setRunning(true);
+    setOutput(null);
+    try {
+      const res = await fetch("/api/student/code/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, language, stdin: stdin || undefined }),
+      });
+      const data = await res.json();
+      setOutput({
+        stdout: data.stdout ?? "",
+        stderr: data.stderr ?? data.message ?? "",
+        exitCode: data.exitCode ?? (res.ok ? 0 : 1),
+        timedOut: data.timedOut ?? false,
+      });
+    } catch {
+      setOutput({
+        stdout: "",
+        stderr: "Не вдалося з'єднатися з сервером виконання коду",
+        exitCode: 1,
+        timedOut: false,
+      });
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <CodeEditor
+        value={code}
+        onChange={onCodeChange}
+        language={language}
+        height="300px"
+      />
+      {/* Controls */}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={handleRun}
+          disabled={running || !code.trim()}
+          className="flex items-center gap-1.5 rounded-lg bg-green-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-green-700 disabled:bg-green-400 disabled:cursor-not-allowed"
+        >
+          {running ? (
+            <>
+              <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+              Виконання...
+            </>
+          ) : (
+            <>
+              <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 16 16">
+                <path d="M6.271 2.147a.5.5 0 0 1 .798 0l5 6.5a.5.5 0 0 1-.399.803H1.67a.5.5 0 0 1-.399-.803l5-6.5z" transform="rotate(90 8 8)" />
+              </svg>
+              Запустити
+            </>
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowStdin(!showStdin)}
+          className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+            showStdin
+              ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+              : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
+          }`}
+        >
+          stdin
+        </button>
+        {output && (
+          <span className={`ml-auto text-[10px] font-mono ${
+            output.exitCode === 0
+              ? "text-green-600 dark:text-green-400"
+              : "text-red-500 dark:text-red-400"
+          }`}>
+            exit: {output.exitCode}{output.timedOut ? " (timeout)" : ""}
+          </span>
+        )}
+      </div>
+      {/* Stdin input */}
+      {showStdin && (
+        <textarea
+          value={stdin}
+          onChange={(e) => setStdin(e.target.value)}
+          placeholder="Введіть вхідні дані (stdin)..."
+          className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 font-mono text-xs text-zinc-900 outline-none focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-50"
+          rows={2}
+        />
+      )}
+      {/* Terminal output */}
+      {output && (
+        <div className="rounded-lg bg-zinc-900 p-3 font-mono text-xs text-zinc-100 max-h-[200px] overflow-y-auto">
+          <div className="mb-1 flex items-center gap-2 text-[10px] text-zinc-500">
+            <span className="inline-block h-2 w-2 rounded-full bg-green-500" />
+            Термінал
+          </div>
+          {output.stdout && (
+            <pre className="whitespace-pre-wrap text-green-300">{output.stdout}</pre>
+          )}
+          {output.stderr && (
+            <pre className="whitespace-pre-wrap text-red-400">{output.stderr}</pre>
+          )}
+          {!output.stdout && !output.stderr && (
+            <span className="text-zinc-500">(порожній вивід)</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function MatchingQuestionView({

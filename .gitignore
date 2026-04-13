@@ -1,2 +1,7 @@
 .claude/
 backend/uploads/
+.env.production
+
+# ONNX runtime WASM files (copied from node_modules at build time)
+frontend/public/ort-wasm-*.wasm
+frontend/public/ort-wasm-*.mjs

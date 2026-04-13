@@ -12,5 +12,17 @@ services:
       - "5432:5432"
     volumes:
       - db-data:/var/lib/postgresql/data
+
+  piston:
+    image: ghcr.io/engineer-man/piston
+    container_name: knu-piston
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - "2000:2000"
+    volumes:
+      - piston-packages:/piston/packages
+
 volumes:
   db-data:
+  piston-packages:

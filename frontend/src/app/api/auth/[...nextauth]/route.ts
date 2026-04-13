@@ -1,25 +1,36 @@
 import NextAuth, { NextAuthOptions } from "next-auth";
-import Credentials from "next-auth/providers/credentials";
+import GoogleProvider from "next-auth/providers/google";
+import CredentialsProvider from "next-auth/providers/credentials";
 import jwt from "jsonwebtoken";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4000";
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:4000";
 const BACKEND_JWT_SECRET = process.env.NEXTAUTH_SECRET || "fallback-secret";
+const IS_DEV = process.env.NODE_ENV === "development";
 
-export const authOptions: NextAuthOptions = {
-  providers: [
-    Credentials({
-      name: "KNU Account",
+// Build providers list
+const providers: any[] = [
+  GoogleProvider({
+    clientId: process.env.GOOGLE_CLIENT_ID!,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+  }),
+];
+
+// Dev-only credentials provider for testing
+if (IS_DEV) {
+  providers.push(
+    CredentialsProvider({
+      id: "dev-login",
+      name: "Dev Login",
       credentials: {
-        email: { label: "Корпоративна пошта", type: "text" },
+        email: { label: "Email", type: "text" },
       },
       async authorize(credentials) {
-        const emailRaw = credentials?.email?.toString().toLowerCase();
-
+        const emailRaw = credentials?.email?.toString().toLowerCase().trim();
         if (!emailRaw || !emailRaw.endsWith("@knu.ua")) {
           throw new Error("Email повинен бути в домені @knu.ua");
         }
 
-        // Derive a human-friendly name from standardized email: "name_surname@knu.ua"
         const localPart = emailRaw.split("@")[0] ?? "";
         const segments = localPart.split("_").filter(Boolean);
         const capitalize = (s: string) =>
@@ -27,10 +38,7 @@ export const authOptions: NextAuthOptions = {
 
         let derivedName: string;
         if (segments.length >= 2) {
-          const [first, last, ...rest] = segments;
-          derivedName = [first, last, ...rest]
-            .map((p) => capitalize(p))
-            .join(" ");
+          derivedName = segments.map((p) => capitalize(p)).join(" ");
         } else {
           derivedName = emailRaw;
         }
@@ -39,40 +47,65 @@ export const authOptions: NextAuthOptions = {
         let role: "TEACHER" | "STUDENT" = "STUDENT";
         try {
           const res = await fetch(
-            `${BACKEND_URL}/auth/check-role?email=${encodeURIComponent(emailRaw)}`
+            `${BACKEND_URL}/auth/check-role?email=${encodeURIComponent(emailRaw)}`,
           );
           if (res.ok) {
             const data = await res.json();
-            if (data.role === "TEACHER") {
-              role = "TEACHER";
-            }
+            if (data.role === "TEACHER") role = "TEACHER";
           }
-        } catch {
-          // If backend is unreachable, default to STUDENT
-        }
+        } catch {}
 
-        return {
-          id: emailRaw,
-          email: emailRaw,
-          name: derivedName,
-          role,
-        } as any;
+        return { id: emailRaw, email: emailRaw, name: derivedName, role } as any;
       },
     }),
-  ],
+  );
+}
+
+export const authOptions: NextAuthOptions = {
+  providers,
   session: {
     strategy: "jwt",
   },
   callbacks: {
-    async jwt({ token, user }) {
-      if (user) {
-        const email = (user as any).email?.toLowerCase();
-        const role = (user as any).role as "TEACHER" | "STUDENT";
-        token.email = email;
-        token.role = role;
-        token.name = (user as any).name;
+    async signIn({ account, profile }) {
+      if (account?.provider === "google") {
+        const email = profile?.email?.toLowerCase();
+        if (!email || !email.endsWith("@knu.ua")) {
+          return "/login?error=InvalidDomain";
+        }
       }
-      // Sign a plain JWT for backend on every call (so it stays fresh)
+      return true;
+    },
+    async jwt({ token, user, account, profile }) {
+      // Google login
+      if (account?.provider === "google" && profile) {
+        const email = profile.email?.toLowerCase() ?? "";
+        token.email = email;
+        token.name = profile.name ?? email;
+        token.picture = (profile as any).picture ?? null;
+
+        let role: "TEACHER" | "STUDENT" = "STUDENT";
+        try {
+          const res = await fetch(
+            `${BACKEND_URL}/auth/check-role?email=${encodeURIComponent(email)}`,
+          );
+          if (res.ok) {
+            const data = await res.json();
+            if (data.role === "TEACHER") role = "TEACHER";
+          }
+        } catch {}
+        token.role = role;
+      }
+
+      // Dev credentials login
+      if (account?.provider === "dev-login" && user) {
+        token.email = (user as any).email;
+        token.name = (user as any).name;
+        token.role = (user as any).role;
+        token.picture = null;
+      }
+
+      // Sign backend JWT
       const backendToken = jwt.sign(
         {
           sub: token.email,
@@ -81,7 +114,7 @@ export const authOptions: NextAuthOptions = {
           name: token.name,
         },
         BACKEND_JWT_SECRET,
-        { expiresIn: "7d" }
+        { expiresIn: "7d" },
       );
       token.backendToken = backendToken;
       return token;
@@ -89,6 +122,8 @@ export const authOptions: NextAuthOptions = {
     async session({ session, token }) {
       if (token && session.user) {
         session.user.email = token.email as string;
+        session.user.name = token.name as string;
+        session.user.image = (token.picture as string) ?? null;
         (session.user as any).role = token.role;
         (session as any).backendToken = token.backendToken;
       }
@@ -97,6 +132,7 @@ export const authOptions: NextAuthOptions = {
   },
   pages: {
     signIn: "/login",
+    error: "/login",
   },
   secret: process.env.NEXTAUTH_SECRET,
 };
