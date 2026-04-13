@@ -37,6 +37,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-knu_testing}?schema=public
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      JWT_SECRET: ${JWT_SECRET:-${NEXTAUTH_SECRET}}
       PISTON_URL: http://piston:2000/api/v2/execute
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
       PORT: 4000
