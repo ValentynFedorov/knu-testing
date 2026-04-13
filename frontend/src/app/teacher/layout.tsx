@@ -1,19 +1,33 @@
+"use client";
+
 import { ReactNode } from "react";
-import { getServerSession } from "next-auth";
-import { redirect } from "next/navigation";
-import { authOptions } from "@/lib/auth";
+import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 
-export default async function TeacherLayout({
-  children,
-}: {
-  children: ReactNode;
-}) {
-  const session = await getServerSession(authOptions);
-
+export default function TeacherLayout({ children }: { children: ReactNode }) {
+  const { data: session, status } = useSession();
+  const router = useRouter();
   const role = (session?.user as any)?.role as string | undefined;
 
-  if (!session || !session.user || role !== "TEACHER") {
-    redirect("/");
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      router.replace("/login");
+    } else if (status === "authenticated" && role !== "TEACHER") {
+      router.replace("/");
+    }
+  }, [status, role, router]);
+
+  if (status === "loading") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-50 dark:bg-black">
+        <p className="text-zinc-500">Завантаження...</p>
+      </div>
+    );
+  }
+
+  if (status !== "authenticated" || role !== "TEACHER") {
+    return null;
   }
 
   return (
