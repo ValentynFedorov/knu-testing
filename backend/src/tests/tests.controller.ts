@@ -20,6 +20,11 @@ export class TestsController {
     return this.testsService.listTests(req.user.id);
   }
 
+  @Get(':id/rules')
+  getRules(@Param('id') id: string) {
+    return this.testsService.getRules(id);
+  }
+
   @Post(':id/rules')
   addRules(@Param('id') id: string, @Body() dto: CreateTestRulesDto) {
     return this.testsService.addRules(id, dto.rules || []);

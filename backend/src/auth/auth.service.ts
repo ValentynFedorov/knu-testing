@@ -40,11 +40,11 @@ export class AuthService {
       return { role: 'STUDENT' };
     }
 
-    const user = await this.prisma.user.findUnique({
+    // Check the whitelist — this is the source of truth for role assignment
+    const whitelisted = await this.prisma.teacherWhitelist.findUnique({
       where: { email: normalized },
-      select: { role: true },
     });
 
-    return { role: user?.role ?? 'STUDENT' };
+    return { role: whitelisted ? 'TEACHER' : 'STUDENT' };
   }
 }

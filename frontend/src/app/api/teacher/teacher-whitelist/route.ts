@@ -1,15 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getToken } from "next-auth/jwt";
+import { getBackendToken } from "@/lib/get-backend-token";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
 
-if (!BACKEND_URL) {
-  throw new Error("NEXT_PUBLIC_BACKEND_URL is not configured");
-}
-
 export async function GET(req: NextRequest) {
-  const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
-  const backendToken = token?.backendToken as string | undefined;
+  const backendToken = await getBackendToken(req);
   if (!backendToken) return new NextResponse("Unauthorized", { status: 401 });
 
   const res = await fetch(`${BACKEND_URL}/admin/teacher-whitelist`, {
@@ -20,8 +15,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
-  const backendToken = token?.backendToken as string | undefined;
+  const backendToken = await getBackendToken(req);
   if (!backendToken) return new NextResponse("Unauthorized", { status: 401 });
 
   const body = await req.text();

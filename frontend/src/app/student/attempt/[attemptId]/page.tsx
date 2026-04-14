@@ -235,7 +235,7 @@ function useAntiCheatControls(attemptId: string | null, activeQuestionId: string
         return false;
       }
 
-      // Detect PrintScreen key (best-effort, не всі браузери/ОС його дають)
+      // Detect PrintScreen key — hide content briefly so screenshot is blank
       if (e.key === "PrintScreen") {
         const nowIso = new Date().toISOString();
         logIntegrityEvent({
@@ -245,7 +245,29 @@ function useAntiCheatControls(attemptId: string | null, activeQuestionId: string
           startedAt: nowIso,
           metadata: { key: "PrintScreen" },
         }).catch(console.error);
-        // заблокувати стандартну поведінку, якщо можливо
+        // Hide page content so the captured screenshot is black
+        document.body.style.visibility = "hidden";
+        setTimeout(() => {
+          document.body.style.visibility = "visible";
+        }, 1500);
+        e.preventDefault();
+        // Overwrite clipboard with blank
+        navigator.clipboard.writeText("").catch(() => {});
+        return false;
+      }
+
+      // Block Windows screenshot shortcuts: Win+Shift+S, Win+PrtSc
+      if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "s") {
+        document.body.style.visibility = "hidden";
+        setTimeout(() => { document.body.style.visibility = "visible"; }, 1500);
+        const nowIso = new Date().toISOString();
+        logIntegrityEvent({
+          attemptId: attemptId!,
+          attemptQuestionId: activeQuestionId ?? undefined,
+          type: "SCREENSHOT",
+          startedAt: nowIso,
+          metadata: { key: "Win+Shift+S" },
+        }).catch(console.error);
         e.preventDefault();
         return false;
       }
@@ -364,6 +386,7 @@ export default function AttemptPage() {
     hasStarted && isExam,
     attemptId ?? null,
     currentQuestion?.id ?? null,
+    mediaStream,
   );
 
   useEffect(() => {
@@ -424,15 +447,8 @@ export default function AttemptPage() {
       return stream;
     } catch (err: any) {
       console.error("Failed to get media permissions", err);
-      // If camera is physically unavailable or busy, skip the step
-      if (err?.name === "NotReadableError" || err?.name === "NotFoundError") {
-        setMediaError(null);
-        return null;
-      }
-      setMediaError(
-        "Потрібен доступ до камери та мікрофона для проходження тесту.",
-      );
-      throw err;
+      setMediaError(null);
+      return null;
     }
   }
 
@@ -570,21 +586,18 @@ export default function AttemptPage() {
   async function startTest() {
     if (!attempt) return;
     if (isExam) {
-      if (hasCameraDevice && !consentChecked) {
+      if (!consentChecked) {
         setError("Поставте позначку згоди на використання камери та мікрофона.");
         return;
       }
 
-      // Only request camera/mic if a physical camera is present
-      if (hasCameraDevice) {
-        try {
-          if (!mediaStream) {
-            await requestMediaPermissions();
-          }
-        } catch {
-          // Якщо немає доступу до медіа — не стартуємо тест
-          return;
+      // Always request camera/mic for exam mode
+      try {
+        if (!mediaStream) {
+          await requestMediaPermissions();
         }
+      } catch {
+        // If permission denied — still allow the test but without proctoring
       }
 
       // Request fullscreen (жест користувача — клік по кнопці)
@@ -617,42 +630,78 @@ export default function AttemptPage() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [attempt, hasStarted, fullscreenLost]);
+  }, [attempt, hasStarted]);
 
-  // When global timer hits 0 — auto-submit the attempt
+  // When global timer hits 0, auto-finish the test
+  const finishingRef = useRef(false);
   useEffect(() => {
-    if (globalRemaining !== 0 || !hasStarted || finishing || !attempt) return;
-    setFinishing(true);
-    (async () => {
-      try {
-        if (currentQuestion) {
-          const payload = answers[currentQuestion.id];
-          if (payload !== undefined) {
-            await submitAnswers(attemptId, [
-              { attemptQuestionId: currentQuestion.id, answerPayload: payload },
-            ]).catch(console.error);
+    if (globalRemaining === 0 && hasStarted && !finishingRef.current) {
+      finishingRef.current = true;
+      (async () => {
+        try {
+          flushQuestionTime();
+          await persistCurrentAnswer();
+          await finishAttempt(attemptId, timePerQuestion.current);
+          if (document.fullscreenElement) {
+            document.exitFullscreen().catch(() => {});
           }
+          if (attempt?.showResultToStudent) {
+            router.push(`/student/finished?attemptId=${attemptId}`);
+          } else {
+            router.push("/student/finished");
+          }
+        } catch (err) {
+          console.error("Auto-finish failed", err);
+          finishingRef.current = false;
         }
-        await finishAttempt(attemptId);
-        if (attempt.showResultToStudent) {
-          router.push(`/student/finished?attemptId=${attemptId}`);
-        } else {
-          router.push("/student/finished");
-        }
-      } catch (err) {
-        console.error(err);
-        setError("Час вийшов. Не вдалося завершити тест.");
-        setFinishing(false);
-      }
-    })();
+      })();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [globalRemaining]);
+  }, [globalRemaining, hasStarted]);
 
-  // When per-question timer hits 0, lock поточне питання і перейти далі
+  // When per-question timer hits 0, lock the question and move to next (or finish if last)
   useEffect(() => {
-    if (questionRemaining === 0 && currentQuestion && !lockedQuestions[currentQuestion.id]) {
+    if (questionRemaining === 0 && currentQuestion && !lockedQuestions[currentQuestion.id] && !finishingRef.current) {
+      // Lock this question
       setLockedQuestions((prev) => ({ ...prev, [currentQuestion.id]: true }));
-      handleNext();
+
+      // Try to find next unlocked question
+      const nextIdx = (() => {
+        if (!attempt) return -1;
+        for (let i = currentIndex + 1; i < attempt.questions.length; i++) {
+          if (!lockedQuestions[attempt.questions[i].id]) return i;
+        }
+        // Also check backwards for back-navigation
+        for (let i = 0; i < currentIndex; i++) {
+          if (!lockedQuestions[attempt.questions[i].id]) return i;
+        }
+        return -1;
+      })();
+
+      if (nextIdx === -1) {
+        // This was the last question — auto-finish the test
+        finishingRef.current = true;
+        (async () => {
+          try {
+            flushQuestionTime();
+            await persistCurrentAnswer();
+            await finishAttempt(attemptId, timePerQuestion.current);
+            if (document.fullscreenElement) {
+              document.exitFullscreen().catch(() => {});
+            }
+            if (attempt?.showResultToStudent) {
+              router.push(`/student/finished?attemptId=${attemptId}`);
+            } else {
+              router.push("/student/finished");
+            }
+          } catch (err) {
+            console.error("Auto-finish failed", err);
+            finishingRef.current = false;
+          }
+        })();
+      } else {
+        handleNext();
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [questionRemaining, currentQuestion?.id]);
@@ -796,7 +845,7 @@ export default function AttemptPage() {
                 </li>
               )}
               <li>Деякі питання можуть мати окремий ліміт часу.</li>
-              {isExam && hasCameraDevice && (
+              {isExam && (
                 <li>
                   Під час тесту буде ввімкнено камеру та мікрофон; відео і голос
                   можуть бути записані для запобігання недобросовісному
@@ -805,7 +854,7 @@ export default function AttemptPage() {
               )}
             </ul>
           </div>
-          {isExam && hasCameraDevice && (
+          {isExam && (
             <div className="space-y-2 rounded-xl bg-zinc-50 p-3 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
               <label className="flex items-start gap-2">
                 <input
@@ -828,7 +877,7 @@ export default function AttemptPage() {
           )}
           <button
             onClick={startTest}
-            disabled={isExam && hasCameraDevice === true && !consentChecked}
+            disabled={isExam && !consentChecked}
             className="w-full rounded-xl bg-blue-600 px-6 py-3 text-base font-semibold text-white shadow-md transition hover:bg-blue-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-blue-400"
           >
             Розпочати тест
@@ -899,6 +948,14 @@ export default function AttemptPage() {
             <div className="flex items-center gap-1 rounded-full bg-zinc-100 px-3 py-1 dark:bg-zinc-800">
               <span>Питання {progress}</span>
             </div>
+            <button
+              type="button"
+              onClick={handleFinish}
+              disabled={finishing}
+              className="rounded-full bg-red-600 px-3 py-1 text-xs font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-400"
+            >
+              {finishing ? "..." : "Завершити"}
+            </button>
           </div>
         </header>
 
@@ -941,14 +998,6 @@ export default function AttemptPage() {
                 Останнє питання
               </span>
             )}
-            <button
-              type="button"
-              onClick={handleFinish}
-              disabled={finishing}
-              className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-green-700 disabled:cursor-not-allowed disabled:bg-green-400"
-            >
-              {finishing ? "Завершення..." : "Завершити тест"}
-            </button>
           </div>
         </footer>
       </div>
@@ -1307,13 +1356,7 @@ function MatchingQuestionView({
         <p className="text-xs font-medium text-zinc-700 dark:text-zinc-200">
           Ліва частина
         </p>
-        {leftItems.map((left) => {
-          const usedRights = new Set(
-            currentPairs
-              .filter((p) => p.left !== left && p.right)
-              .map((p) => p.right as string),
-          );
-          return (
+        {leftItems.map((left) => (
             <div
               key={left}
               className="flex items-center justify-between gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs dark:border-zinc-700 dark:bg-zinc-800"
@@ -1326,18 +1369,13 @@ function MatchingQuestionView({
               >
                 <option value="">Не вибрано</option>
                 {rightItems.map((right) => (
-                  <option
-                    key={right}
-                    value={right}
-                    disabled={usedRights.has(right)}
-                  >
+                  <option key={right} value={right}>
                     {right}
                   </option>
                 ))}
               </select>
             </div>
-          );
-        })}
+          ))}
       </div>
       <div className="space-y-2">
         <p className="text-xs font-medium text-zinc-700 dark:text-zinc-200">

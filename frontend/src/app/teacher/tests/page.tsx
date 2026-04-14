@@ -86,7 +86,23 @@ export default function TeacherTestsPage() {
 
   async function selectTest(testId: string) {
     setSelectedTestId(testId);
-    await Promise.all([loadRuns(testId), loadGroups()]);
+    await Promise.all([loadRuns(testId), loadGroups(), loadRules(testId)]);
+  }
+
+  async function loadRules(testId: string) {
+    try {
+      const res = await fetch(`/api/teacher/tests/${testId}/rules`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = (await res.json()) as { groupId?: string; questionsCount?: number; mode?: string }[];
+      setRules(
+        data
+          .filter((r) => r.mode === "GROUP_RANDOM" && r.groupId)
+          .map((r) => ({ groupId: r.groupId!, questionsCount: r.questionsCount ?? 1 })),
+      );
+    } catch (err) {
+      console.error(err);
+      setRules([]);
+    }
   }
 
   async function loadRuns(testId: string) {
@@ -193,6 +209,13 @@ export default function TeacherTestsPage() {
     }
   }
 
+  /** Convert datetime-local value (no tz info) to a full ISO string in the user's local timezone */
+  function localDatetimeToISO(dtLocal: string): string {
+    // datetime-local gives "2026-04-14T16:10" — create Date treating it as local time
+    const d = new Date(dtLocal);
+    return d.toISOString();
+  }
+
   async function handleCreateRun(e: FormEvent) {
     e.preventDefault();
     if (!selectedTestId) return;
@@ -204,8 +227,8 @@ export default function TeacherTestsPage() {
     try {
       const body = {
         token: newRunToken.trim(),
-        startsAt: newRunStart,
-        endsAt: newRunEnd,
+        startsAt: localDatetimeToISO(newRunStart),
+        endsAt: localDatetimeToISO(newRunEnd),
       };
       const res = await fetch(`/api/teacher/tests/${selectedTestId}/runs`, {
         method: "POST",
@@ -404,30 +427,36 @@ className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs
                       key={index}
                       className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-2 text-xs dark:border-zinc-700 dark:bg-zinc-800"
                     >
-                      <select
-                        value={r.groupId}
-                        onChange={(e) =>
-                          updateRuleRow(index, { groupId: e.target.value })
-                        }
-                        className="flex-1 rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
-                      >
-                        {groups.map((g) => (
-                          <option key={g.id} value={g.id}>
-                            {g.name}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        type="number"
-                        min={1}
-                        value={r.questionsCount}
-                        onChange={(e) =>
-                          updateRuleRow(index, {
-                            questionsCount: Number(e.target.value || 1),
-                          })
-                        }
-                        className="w-20 rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
-                      />
+                      <label className="flex-1">
+                        <span className="mb-1 block text-[10px] text-zinc-500 dark:text-zinc-400">Група питань</span>
+                        <select
+                          value={r.groupId}
+                          onChange={(e) =>
+                            updateRuleRow(index, { groupId: e.target.value })
+                          }
+                          className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+                        >
+                          {groups.map((g) => (
+                            <option key={g.id} value={g.id}>
+                              {g.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="w-24">
+                        <span className="mb-1 block text-[10px] text-zinc-500 dark:text-zinc-400">Кількість питань</span>
+                        <input
+                          type="number"
+                          min={1}
+                          value={r.questionsCount}
+                          onChange={(e) =>
+                            updateRuleRow(index, {
+                              questionsCount: Number(e.target.value || 1),
+                            })
+                          }
+                          className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+                        />
+                      </label>
                       <button
                         type="button"
                         onClick={() => removeRuleRow(index)}

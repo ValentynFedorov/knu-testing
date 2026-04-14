@@ -31,6 +31,13 @@ export class TestsService {
     });
   }
 
+  async getRules(testId: string) {
+    return this.prisma.testQuestionRule.findMany({
+      where: { testId },
+      orderBy: { orderIndex: 'asc' },
+    });
+  }
+
   async addRules(testId: string, rules: CreateTestRuleDto[]) {
     const existing = await this.prisma.test.findUnique({ where: { id: testId } });
     if (!existing) {
