@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { logIntegrityEvent } from "@/lib/api";
 
 const COOLDOWN_MS = 20000; // 20s between speech events
+const RESTART_DELAY_MS = 300; // delay before restarting recognition
 
 // Ukrainian question / command patterns that suggest querying an assistant
 const SUSPICIOUS_PATTERNS = [
@@ -52,6 +53,16 @@ export function useSpeechMonitor(
 ) {
   const lastLoggedRef = useRef<number>(0);
   const recognitionRef = useRef<any>(null);
+  const activeRef = useRef(active);
+  const attemptIdRef = useRef(attemptId);
+  const questionIdRef = useRef(attemptQuestionId);
+
+  // Keep refs in sync so callbacks use latest values
+  useEffect(() => {
+    activeRef.current = active;
+    attemptIdRef.current = attemptId;
+    questionIdRef.current = attemptQuestionId;
+  }, [active, attemptId, attemptQuestionId]);
 
   useEffect(() => {
     if (!active || !attemptId) return;
@@ -61,75 +72,119 @@ export function useSpeechMonitor(
       (window as any).webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
-      console.warn("Web Speech API not supported in this browser");
+      console.warn("[SpeechMonitor] Web Speech API not supported in this browser");
       return;
     }
 
-    const recognition = new SpeechRecognition();
-    recognition.lang = "uk-UA";
-    recognition.continuous = true;
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-    recognitionRef.current = recognition;
+    let stopped = false;
 
-    recognition.onresult = (event: any) => {
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        if (!event.results[i].isFinal) continue;
+    function createAndStart() {
+      if (stopped) return;
 
-        const transcript = event.results[i][0].transcript;
-        const confidence = event.results[i][0].confidence;
-        const analysis = isSuspicious(transcript);
+      const recognition = new SpeechRecognition();
+      recognition.lang = "uk-UA";
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+      recognitionRef.current = recognition;
 
-        if (analysis.suspicious) {
-          const now = Date.now();
-          if (now - lastLoggedRef.current > COOLDOWN_MS) {
-            lastLoggedRef.current = now;
-            logIntegrityEvent({
-              attemptId: attemptId!,
-              attemptQuestionId: attemptQuestionId ?? undefined,
-              type: "SUSPICIOUS_SPEECH",
-              startedAt: new Date().toISOString(),
-              metadata: {
-                transcript: transcript.slice(0, 200),
-                confidence: Math.round(confidence * 100),
-                reason: analysis.reason,
-              },
-            }).catch(console.error);
+      recognition.onresult = (event: any) => {
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          if (!event.results[i].isFinal) continue;
+
+          const transcript = event.results[i][0].transcript;
+          const confidence = event.results[i][0].confidence;
+          console.log("[SpeechMonitor] Transcript:", transcript, "confidence:", Math.round(confidence * 100) + "%");
+          const analysis = isSuspicious(transcript);
+
+          if (analysis.suspicious) {
+            const now = Date.now();
+            if (now - lastLoggedRef.current > COOLDOWN_MS) {
+              lastLoggedRef.current = now;
+              logIntegrityEvent({
+                attemptId: attemptIdRef.current!,
+                attemptQuestionId: questionIdRef.current ?? undefined,
+                type: "SUSPICIOUS_SPEECH",
+                startedAt: new Date().toISOString(),
+                metadata: {
+                  transcript: transcript.slice(0, 200),
+                  confidence: Math.round(confidence * 100),
+                  reason: analysis.reason,
+                },
+              }).catch(console.error);
+            }
           }
         }
-      }
-    };
+      };
 
-    recognition.onerror = (event: any) => {
-      // "no-speech" is normal — just means silence, restart
-      if (event.error === "no-speech" || event.error === "aborted") return;
-      console.error("Speech recognition error:", event.error);
-    };
-
-    recognition.onend = () => {
-      // Auto-restart if still active
-      try {
-        if (recognitionRef.current) {
-          recognitionRef.current.start();
+      recognition.onerror = (event: any) => {
+        const err = event.error;
+        if (err === "no-speech" || err === "aborted") {
+          // Normal — silence or tab switch, will auto-restart via onend
+          return;
         }
-      } catch {
-        // ignore — may throw if already started
-      }
-    };
+        if (err === "not-allowed") {
+          console.warn("[SpeechMonitor] Microphone permission denied for Speech API");
+          return;
+        }
+        if (err === "network") {
+          console.warn("[SpeechMonitor] Network error — Speech API requires internet connection");
+          return;
+        }
+        console.error("[SpeechMonitor] Speech recognition error:", err);
+      };
 
-    try {
-      recognition.start();
-    } catch {
-      // ignore
+      recognition.onend = () => {
+        // Auto-restart if still active (Chrome stops continuous recognition periodically)
+        if (!stopped && activeRef.current) {
+          setTimeout(() => {
+            if (!stopped && activeRef.current) {
+              createAndStart();
+            }
+          }, RESTART_DELAY_MS);
+        }
+      };
+
+      try {
+        recognition.start();
+        console.log("[SpeechMonitor] Started speech recognition (uk-UA)");
+      } catch (err) {
+        console.error("[SpeechMonitor] Failed to start:", err);
+        // Retry after delay
+        if (!stopped) {
+          setTimeout(() => createAndStart(), 2000);
+        }
+      }
     }
 
+    // Request microphone permission first, then start speech recognition
+    // This ensures the permission prompt appears
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => {
+        // Stop the stream — we just needed the permission
+        stream.getTracks().forEach((t) => t.stop());
+        console.log("[SpeechMonitor] Microphone permission granted");
+        createAndStart();
+      })
+      .catch((err) => {
+        console.warn("[SpeechMonitor] Microphone permission denied, trying Speech API anyway:", err);
+        // Try anyway — some browsers allow SpeechRecognition without getUserMedia
+        createAndStart();
+      });
+
     return () => {
-      recognitionRef.current = null;
-      try {
-        recognition.stop();
-      } catch {
-        // ignore
+      stopped = true;
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch {
+          // ignore
+        }
+        recognitionRef.current = null;
       }
     };
-  }, [active, attemptId, attemptQuestionId]);
+    // Only re-create when active or attemptId changes — not on every questionId change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, attemptId]);
 }
