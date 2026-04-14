@@ -60,6 +60,7 @@ export class AttemptsService {
                 },
                 question: true,
               },
+              orderBy: { orderIndex: 'asc' },
             },
           },
         },
@@ -146,6 +147,12 @@ export class AttemptsService {
           }
         }
       }
+    }
+
+    if (allSelectedQuestionIds.length === 0) {
+      // Clean up the empty attempt
+      await this.prisma.studentAttempt.delete({ where: { id: attempt.id } });
+      throw new BadRequestException('Test has no questions configured. Contact your teacher.');
     }
 
     // Shuffle final list

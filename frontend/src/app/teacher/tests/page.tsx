@@ -86,7 +86,23 @@ export default function TeacherTestsPage() {
 
   async function selectTest(testId: string) {
     setSelectedTestId(testId);
-    await Promise.all([loadRuns(testId), loadGroups()]);
+    await Promise.all([loadRuns(testId), loadGroups(), loadRules(testId)]);
+  }
+
+  async function loadRules(testId: string) {
+    try {
+      const res = await fetch(`/api/teacher/tests/${testId}/rules`);
+      if (!res.ok) throw new Error(await res.text());
+      const data = (await res.json()) as { groupId?: string; questionsCount?: number; mode?: string }[];
+      setRules(
+        data
+          .filter((r) => r.mode === "GROUP_RANDOM" && r.groupId)
+          .map((r) => ({ groupId: r.groupId!, questionsCount: r.questionsCount ?? 1 })),
+      );
+    } catch (err) {
+      console.error(err);
+      setRules([]);
+    }
   }
 
   async function loadRuns(testId: string) {
@@ -193,6 +209,13 @@ export default function TeacherTestsPage() {
     }
   }
 
+  /** Convert datetime-local value (no tz info) to a full ISO string in the user's local timezone */
+  function localDatetimeToISO(dtLocal: string): string {
+    // datetime-local gives "2026-04-14T16:10" — create Date treating it as local time
+    const d = new Date(dtLocal);
+    return d.toISOString();
+  }
+
   async function handleCreateRun(e: FormEvent) {
     e.preventDefault();
     if (!selectedTestId) return;
@@ -204,8 +227,8 @@ export default function TeacherTestsPage() {
     try {
       const body = {
         token: newRunToken.trim(),
-        startsAt: newRunStart,
-        endsAt: newRunEnd,
+        startsAt: localDatetimeToISO(newRunStart),
+        endsAt: localDatetimeToISO(newRunEnd),
       };
       const res = await fetch(`/api/teacher/tests/${selectedTestId}/runs`, {
         method: "POST",
