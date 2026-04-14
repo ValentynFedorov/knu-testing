@@ -609,6 +609,33 @@ export default function AttemptPage() {
     return () => clearInterval(interval);
   }, [attempt, hasStarted]);
 
+  // When global timer hits 0, auto-finish the test
+  const finishingRef = useRef(false);
+  useEffect(() => {
+    if (globalRemaining === 0 && hasStarted && !finishingRef.current) {
+      finishingRef.current = true;
+      (async () => {
+        try {
+          flushQuestionTime();
+          await persistCurrentAnswer();
+          await finishAttempt(attemptId, timePerQuestion.current);
+          if (document.fullscreenElement) {
+            document.exitFullscreen().catch(() => {});
+          }
+          if (attempt?.showResultToStudent) {
+            router.push(`/student/finished?attemptId=${attemptId}`);
+          } else {
+            router.push("/student/finished");
+          }
+        } catch (err) {
+          console.error("Auto-finish failed", err);
+          finishingRef.current = false;
+        }
+      })();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [globalRemaining, hasStarted]);
+
   // When пер-question timer hits 0, lock поточне питання і перейти далі
   useEffect(() => {
     if (questionRemaining === 0 && currentQuestion && !lockedQuestions[currentQuestion.id]) {
