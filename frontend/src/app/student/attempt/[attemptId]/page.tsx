@@ -424,15 +424,8 @@ export default function AttemptPage() {
       return stream;
     } catch (err: any) {
       console.error("Failed to get media permissions", err);
-      // If camera is physically unavailable or busy, skip the step
-      if (err?.name === "NotReadableError" || err?.name === "NotFoundError") {
-        setMediaError(null);
-        return null;
-      }
-      setMediaError(
-        "Потрібен доступ до камери та мікрофона для проходження тесту.",
-      );
-      throw err;
+      setMediaError(null);
+      return null;
     }
   }
 
@@ -570,21 +563,18 @@ export default function AttemptPage() {
   async function startTest() {
     if (!attempt) return;
     if (isExam) {
-      if (hasCameraDevice && !consentChecked) {
+      if (!consentChecked) {
         setError("Поставте позначку згоди на використання камери та мікрофона.");
         return;
       }
 
-      // Only request camera/mic if a physical camera is present
-      if (hasCameraDevice) {
-        try {
-          if (!mediaStream) {
-            await requestMediaPermissions();
-          }
-        } catch {
-          // Якщо немає доступу до медіа — не стартуємо тест
-          return;
+      // Always request camera/mic for exam mode
+      try {
+        if (!mediaStream) {
+          await requestMediaPermissions();
         }
+      } catch {
+        // If permission denied — still allow the test but without proctoring
       }
 
       // Request fullscreen (жест користувача — клік по кнопці)
@@ -767,7 +757,7 @@ export default function AttemptPage() {
                 </li>
               )}
               <li>Деякі питання можуть мати окремий ліміт часу.</li>
-              {isExam && hasCameraDevice && (
+              {isExam && (
                 <li>
                   Під час тесту буде ввімкнено камеру та мікрофон; відео і голос
                   можуть бути записані для запобігання недобросовісному
@@ -776,7 +766,7 @@ export default function AttemptPage() {
               )}
             </ul>
           </div>
-          {isExam && hasCameraDevice && (
+          {isExam && (
             <div className="space-y-2 rounded-xl bg-zinc-50 p-3 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
               <label className="flex items-start gap-2">
                 <input
@@ -799,7 +789,7 @@ export default function AttemptPage() {
           )}
           <button
             onClick={startTest}
-            disabled={isExam && hasCameraDevice === true && !consentChecked}
+            disabled={isExam && !consentChecked}
             className="w-full rounded-xl bg-blue-600 px-6 py-3 text-base font-semibold text-white shadow-md transition hover:bg-blue-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:bg-blue-400"
           >
             Розпочати тест
