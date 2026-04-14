@@ -1343,8 +1343,7 @@ function MatchingQuestionView({
                 ))}
               </select>
             </div>
-          );
-        })}
+          ))}
       </div>
       <div className="space-y-2">
         <p className="text-xs font-medium text-zinc-700 dark:text-zinc-200">
