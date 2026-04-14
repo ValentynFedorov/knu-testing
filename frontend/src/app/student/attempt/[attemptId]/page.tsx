@@ -235,7 +235,7 @@ function useAntiCheatControls(attemptId: string | null, activeQuestionId: string
         return false;
       }
 
-      // Detect PrintScreen key (best-effort, не всі браузери/ОС його дають)
+      // Detect PrintScreen key — hide content briefly so screenshot is blank
       if (e.key === "PrintScreen") {
         const nowIso = new Date().toISOString();
         logIntegrityEvent({
@@ -245,7 +245,29 @@ function useAntiCheatControls(attemptId: string | null, activeQuestionId: string
           startedAt: nowIso,
           metadata: { key: "PrintScreen" },
         }).catch(console.error);
-        // заблокувати стандартну поведінку, якщо можливо
+        // Hide page content so the captured screenshot is black
+        document.body.style.visibility = "hidden";
+        setTimeout(() => {
+          document.body.style.visibility = "visible";
+        }, 1500);
+        e.preventDefault();
+        // Overwrite clipboard with blank
+        navigator.clipboard.writeText("").catch(() => {});
+        return false;
+      }
+
+      // Block Windows screenshot shortcuts: Win+Shift+S, Win+PrtSc
+      if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "s") {
+        document.body.style.visibility = "hidden";
+        setTimeout(() => { document.body.style.visibility = "visible"; }, 1500);
+        const nowIso = new Date().toISOString();
+        logIntegrityEvent({
+          attemptId: attemptId!,
+          attemptQuestionId: activeQuestionId ?? undefined,
+          type: "SCREENSHOT",
+          startedAt: nowIso,
+          metadata: { key: "Win+Shift+S" },
+        }).catch(console.error);
         e.preventDefault();
         return false;
       }
@@ -640,14 +662,23 @@ export default function AttemptPage() {
   useEffect(() => {
     if (questionRemaining === 0 && currentQuestion && !lockedQuestions[currentQuestion.id] && !finishingRef.current) {
       // Lock this question
-      const newLocked = { ...lockedQuestions, [currentQuestion.id]: true };
-      setLockedQuestions(newLocked);
+      setLockedQuestions((prev) => ({ ...prev, [currentQuestion.id]: true }));
 
-      // Check if there's any unlocked question to go to
-      const hasUnlocked = attempt?.questions.some((q) => !newLocked[q.id]);
+      // Try to find next unlocked question
+      const nextIdx = (() => {
+        if (!attempt) return -1;
+        for (let i = currentIndex + 1; i < attempt.questions.length; i++) {
+          if (!lockedQuestions[attempt.questions[i].id]) return i;
+        }
+        // Also check backwards for back-navigation
+        for (let i = 0; i < currentIndex; i++) {
+          if (!lockedQuestions[attempt.questions[i].id]) return i;
+        }
+        return -1;
+      })();
 
-      if (!hasUnlocked) {
-        // No more questions — auto-finish the test
+      if (nextIdx === -1) {
+        // This was the last question — auto-finish the test
         finishingRef.current = true;
         (async () => {
           try {
