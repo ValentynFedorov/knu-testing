@@ -636,11 +636,39 @@ export default function AttemptPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [globalRemaining, hasStarted]);
 
-  // When пер-question timer hits 0, lock поточне питання і перейти далі
+  // When per-question timer hits 0, lock the question and move to next (or finish if last)
   useEffect(() => {
-    if (questionRemaining === 0 && currentQuestion && !lockedQuestions[currentQuestion.id]) {
+    if (questionRemaining === 0 && currentQuestion && !lockedQuestions[currentQuestion.id] && !finishingRef.current) {
       setLockedQuestions((prev) => ({ ...prev, [currentQuestion.id]: true }));
-      handleNext();
+
+      // Check if all questions are now locked (this was the last unlocked one)
+      const updatedLocked = { ...lockedQuestions, [currentQuestion.id]: true };
+      const allLocked = attempt?.questions.every((q) => updatedLocked[q.id]);
+
+      if (allLocked) {
+        // All questions timed out — auto-finish the test
+        finishingRef.current = true;
+        (async () => {
+          try {
+            flushQuestionTime();
+            await persistCurrentAnswer();
+            await finishAttempt(attemptId, timePerQuestion.current);
+            if (document.fullscreenElement) {
+              document.exitFullscreen().catch(() => {});
+            }
+            if (attempt?.showResultToStudent) {
+              router.push(`/student/finished?attemptId=${attemptId}`);
+            } else {
+              router.push("/student/finished");
+            }
+          } catch (err) {
+            console.error("Auto-finish failed", err);
+            finishingRef.current = false;
+          }
+        })();
+      } else {
+        handleNext();
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [questionRemaining, currentQuestion?.id]);
