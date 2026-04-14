@@ -427,30 +427,36 @@ className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs
                       key={index}
                       className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 p-2 text-xs dark:border-zinc-700 dark:bg-zinc-800"
                     >
-                      <select
-                        value={r.groupId}
-                        onChange={(e) =>
-                          updateRuleRow(index, { groupId: e.target.value })
-                        }
-                        className="flex-1 rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
-                      >
-                        {groups.map((g) => (
-                          <option key={g.id} value={g.id}>
-                            {g.name}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        type="number"
-                        min={1}
-                        value={r.questionsCount}
-                        onChange={(e) =>
-                          updateRuleRow(index, {
-                            questionsCount: Number(e.target.value || 1),
-                          })
-                        }
-                        className="w-20 rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
-                      />
+                      <label className="flex-1">
+                        <span className="mb-1 block text-[10px] text-zinc-500 dark:text-zinc-400">Група питань</span>
+                        <select
+                          value={r.groupId}
+                          onChange={(e) =>
+                            updateRuleRow(index, { groupId: e.target.value })
+                          }
+                          className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+                        >
+                          {groups.map((g) => (
+                            <option key={g.id} value={g.id}>
+                              {g.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="w-24">
+                        <span className="mb-1 block text-[10px] text-zinc-500 dark:text-zinc-400">Кількість питань</span>
+                        <input
+                          type="number"
+                          min={1}
+                          value={r.questionsCount}
+                          onChange={(e) =>
+                            updateRuleRow(index, {
+                              questionsCount: Number(e.target.value || 1),
+                            })
+                          }
+                          className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+                        />
+                      </label>
                       <button
                         type="button"
                         onClick={() => removeRuleRow(index)}

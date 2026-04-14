@@ -639,14 +639,15 @@ export default function AttemptPage() {
   // When per-question timer hits 0, lock the question and move to next (or finish if last)
   useEffect(() => {
     if (questionRemaining === 0 && currentQuestion && !lockedQuestions[currentQuestion.id] && !finishingRef.current) {
-      setLockedQuestions((prev) => ({ ...prev, [currentQuestion.id]: true }));
+      // Lock this question
+      const newLocked = { ...lockedQuestions, [currentQuestion.id]: true };
+      setLockedQuestions(newLocked);
 
-      // Check if all questions are now locked (this was the last unlocked one)
-      const updatedLocked = { ...lockedQuestions, [currentQuestion.id]: true };
-      const allLocked = attempt?.questions.every((q) => updatedLocked[q.id]);
+      // Check if there's any unlocked question to go to
+      const hasUnlocked = attempt?.questions.some((q) => !newLocked[q.id]);
 
-      if (allLocked) {
-        // All questions timed out — auto-finish the test
+      if (!hasUnlocked) {
+        // No more questions — auto-finish the test
         finishingRef.current = true;
         (async () => {
           try {
@@ -1323,13 +1324,7 @@ function MatchingQuestionView({
         <p className="text-xs font-medium text-zinc-700 dark:text-zinc-200">
           Ліва частина
         </p>
-        {leftItems.map((left) => {
-          const usedRights = new Set(
-            currentPairs
-              .filter((p) => p.left !== left && p.right)
-              .map((p) => p.right as string),
-          );
-          return (
+        {leftItems.map((left) => (
             <div
               key={left}
               className="flex items-center justify-between gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs dark:border-zinc-700 dark:bg-zinc-800"
@@ -1342,11 +1337,7 @@ function MatchingQuestionView({
               >
                 <option value="">Не вибрано</option>
                 {rightItems.map((right) => (
-                  <option
-                    key={right}
-                    value={right}
-                    disabled={usedRights.has(right)}
-                  >
+                  <option key={right} value={right}>
                     {right}
                   </option>
                 ))}
