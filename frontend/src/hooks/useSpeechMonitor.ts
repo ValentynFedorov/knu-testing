@@ -91,8 +91,8 @@ export function useSpeechMonitor(
                   type: "SUSPICIOUS_SPEECH",
                   startedAt: new Date(speechStartRef.current).toISOString(),
                   endedAt: new Date().toISOString(),
-                  durationMs: duration,
                   metadata: {
+                    durationMs: duration,
                     durationSec: Math.round(duration / 1000),
                     reason: `Speech detected for ${Math.round(duration / 1000)} seconds`,
                   },
