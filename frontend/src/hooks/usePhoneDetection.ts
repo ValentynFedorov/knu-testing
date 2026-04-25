@@ -7,12 +7,14 @@ const DETECTION_INTERVAL_MS = 3000;
 const COOLDOWN_MS = 30000;
 const MODEL_INPUT_SIZE = 640;
 const PHONE_CLASS_ID = 67; // COCO class 67 = "cell phone"
-const CONFIDENCE_THRESHOLD = 0.35;
+const CONFIDENCE_THRESHOLD = 0.75;
 const NMS_IOU_THRESHOLD = 0.45;
+const MODEL_PATH = "/yolov8s.onnx";
+const MODEL_NAME = "yolov8s";
 
 /**
- * YOLOv8n ONNX-based phone detection.
- * Loads /yolov8n.onnx via ONNX Runtime Web, runs inference on webcam frames,
+ * YOLOv8s ONNX-based phone detection (small variant — more accurate than nano).
+ * Loads MODEL_PATH via ONNX Runtime Web, runs inference on webcam frames,
  * and logs PHONE_DETECTED integrity events with captured frames.
  */
 export function usePhoneDetection(
@@ -42,8 +44,8 @@ export function usePhoneDetection(
 
         if (cancelled) return;
 
-        console.log("[PhoneDetection] Creating inference session for YOLOv8n...");
-        const session = await ort.InferenceSession.create("/yolov8n.onnx", {
+        console.log(`[PhoneDetection] Creating inference session for ${MODEL_NAME}...`);
+        const session = await ort.InferenceSession.create(MODEL_PATH, {
           executionProviders: ["wasm"],
         });
 
@@ -52,7 +54,7 @@ export function usePhoneDetection(
 
       if (cancelled) return;
       sessionRef.current = session;
-      console.log("[PhoneDetection] YOLOv8n loaded, starting detection loop");
+      console.log(`[PhoneDetection] ${MODEL_NAME} loaded, starting detection loop`);
 
       // Hidden video element for frame capture
       const video = document.createElement("video");
@@ -134,7 +136,7 @@ export function usePhoneDetection(
               startedAt: new Date().toISOString(),
               metadata: {
                 confidence: Math.round(best.confidence * 100),
-                model: "yolov8n",
+                model: MODEL_NAME,
                 bbox: [best.x, best.y, best.w, best.h],
                 frame,
               },

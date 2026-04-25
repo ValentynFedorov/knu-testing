@@ -73,6 +73,16 @@ export default function QuestionBankPage() {
 
   // Question creation modal
   const [showQuestionModal, setShowQuestionModal] = useState(false);
+  // Import questions modal (JSON paste/upload + PDF/Word AI generation)
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importMode, setImportMode] = useState<"JSON" | "DOCUMENT">("JSON");
+  const [importJsonText, setImportJsonText] = useState("");
+  const [importDocFile, setImportDocFile] = useState<File | null>(null);
+  const [importDocCount, setImportDocCount] = useState(10);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importResult, setImportResult] = useState<string | null>(null);
+  const [claudePrompt, setClaudePrompt] = useState<string | null>(null);
+  const [promptCopied, setPromptCopied] = useState(false);
   const [qType, setQType] = useState<QuestionType>("SINGLE_CHOICE");
   const [qText, setQText] = useState("");
   const [qImageUrl, setQImageUrl] = useState<string | null>(null);
@@ -382,6 +392,130 @@ export default function QuestionBankPage() {
     }
   }
 
+  function openImportModal() {
+    setImportMode("JSON");
+    setImportJsonText("");
+    setImportDocFile(null);
+    setImportDocCount(10);
+    setImportResult(null);
+    setShowImportModal(true);
+    // Lazy-load the prompt template
+    if (claudePrompt === null) {
+      fetch("/api/teacher/claude-prompt")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data?.prompt) setClaudePrompt(data.prompt);
+        })
+        .catch(console.error);
+    }
+  }
+
+  async function copyClaudePrompt() {
+    if (!claudePrompt) return;
+    try {
+      await navigator.clipboard.writeText(claudePrompt);
+      setPromptCopied(true);
+      setTimeout(() => setPromptCopied(false), 2000);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function submitJsonImport() {
+    if (!selectedGroupId) {
+      setImportResult("Спочатку виберіть групу питань");
+      return;
+    }
+    if (!importJsonText.trim()) {
+      setImportResult("Вставте JSON у текстове поле");
+      return;
+    }
+    let parsed: any;
+    try {
+      parsed = JSON.parse(importJsonText);
+    } catch {
+      setImportResult("Невалідний JSON. Перевірте формат.");
+      return;
+    }
+    const questions = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed?.questions)
+        ? parsed.questions
+        : null;
+    if (!questions) {
+      setImportResult("JSON має бути масивом питань або об'єктом з полем 'questions'");
+      return;
+    }
+    setImportBusy(true);
+    setImportResult(null);
+    try {
+      const res = await fetch("/api/teacher/questions/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ groupId: selectedGroupId, questions }),
+      });
+      const text = await res.text();
+      if (!res.ok) throw new Error(text);
+      const result = JSON.parse(text);
+      const errSummary = result.errors?.length
+        ? ` (помилок: ${result.errorCount})`
+        : "";
+      setImportResult(`Імпортовано: ${result.createdCount} питань${errSummary}`);
+      if (result.errors?.length) {
+        console.error("Import errors:", result.errors);
+      }
+      await loadQuestions(selectedGroupId);
+      if (result.createdCount > 0 && !result.errorCount) {
+        setTimeout(() => setShowImportModal(false), 1500);
+      }
+    } catch (err: any) {
+      setImportResult("Помилка імпорту: " + (err?.message || String(err)));
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
+  async function submitDocumentImport() {
+    if (!selectedGroupId) {
+      setImportResult("Спочатку виберіть групу питань");
+      return;
+    }
+    if (!importDocFile) {
+      setImportResult("Виберіть PDF або DOCX файл");
+      return;
+    }
+    setImportBusy(true);
+    setImportResult("Генеруємо питання за допомогою Claude... (до 60с)");
+    try {
+      const fd = new FormData();
+      fd.append("file", importDocFile);
+      fd.append("groupId", selectedGroupId);
+      fd.append("questionCount", String(importDocCount));
+      const res = await fetch("/api/teacher/questions/import-from-document", {
+        method: "POST",
+        body: fd,
+      });
+      const text = await res.text();
+      if (!res.ok) throw new Error(text);
+      const result = JSON.parse(text);
+      const errSummary = result.errors?.length
+        ? ` (помилок: ${result.errorCount})`
+        : "";
+      setImportResult(`Згенеровано та збережено: ${result.createdCount} питань${errSummary}`);
+      if (result.errors?.length) {
+        console.error("Import errors:", result.errors);
+      }
+      await loadQuestions(selectedGroupId);
+      if (result.createdCount > 0 && !result.errorCount) {
+        setTimeout(() => setShowImportModal(false), 1500);
+      }
+    } catch (err: any) {
+      setImportResult("Помилка генерації: " + (err?.message || String(err)));
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
   async function handleCreateGroup(e: FormEvent) {
     e.preventDefault();
     setError(null);
@@ -443,8 +577,14 @@ export default function QuestionBankPage() {
 
   function toggleCorrect(idx: number) {
     if (qType === "SINGLE_CHOICE") {
-      // Only one correct
-      setQOptions(qOptions.map((o, i) => ({ ...o, isCorrect: i === idx })));
+      // Only one correct at a time, but allow unchecking
+      const wasCorrect = qOptions[idx]?.isCorrect ?? false;
+      setQOptions(
+        qOptions.map((o, i) => ({
+          ...o,
+          isCorrect: !wasCorrect && i === idx,
+        })),
+      );
     } else {
       // Multiple can be correct
       setQOptions(qOptions.map((o, i) => (i === idx ? { ...o, isCorrect: !o.isCorrect } : o)));
@@ -733,16 +873,25 @@ className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs
                 </p>
               )}
               {selectedGroupId && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    resetQuestionForm();
-                    setShowQuestionModal(true);
-                  }}
-                  className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-green-700"
-                >
-                  + Додати питання
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={openImportModal}
+                    className="rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-purple-700"
+                  >
+                    Імпорт (JSON / PDF / Word)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetQuestionForm();
+                      setShowQuestionModal(true);
+                    }}
+                    className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-green-700"
+                  >
+                    + Додати питання
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -970,8 +1119,8 @@ className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs
                   </label>
                   <input
                     type="number"
-                    min={0.5}
-                    step={0.5}
+                    min={0.1}
+                    step={0.1}
                     value={qWeight}
                     onChange={(e) => setQWeight(Number(e.target.value))}
                     className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 outline-none focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-50"
@@ -1415,6 +1564,187 @@ className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Import questions modal */}
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4">
+          <div className="my-8 w-full max-w-3xl rounded-xl bg-white p-5 shadow-xl dark:bg-zinc-900">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
+                Імпорт питань
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowImportModal(false)}
+                className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Tabs */}
+            <div className="mb-4 flex gap-1 border-b border-zinc-200 dark:border-zinc-700">
+              <button
+                type="button"
+                onClick={() => setImportMode("JSON")}
+                className={`px-3 py-2 text-sm font-medium transition ${
+                  importMode === "JSON"
+                    ? "border-b-2 border-purple-600 text-purple-600 dark:text-purple-400"
+                    : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                }`}
+              >
+                JSON (від Claude)
+              </button>
+              <button
+                type="button"
+                onClick={() => setImportMode("DOCUMENT")}
+                className={`px-3 py-2 text-sm font-medium transition ${
+                  importMode === "DOCUMENT"
+                    ? "border-b-2 border-purple-600 text-purple-600 dark:text-purple-400"
+                    : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+                }`}
+              >
+                PDF / Word (AI-генерація)
+              </button>
+            </div>
+
+            {importMode === "JSON" && (
+              <div className="space-y-3">
+                <div className="rounded-lg border border-purple-200 bg-purple-50 p-3 text-xs text-zinc-700 dark:border-purple-900 dark:bg-purple-950/30 dark:text-zinc-300">
+                  <p className="mb-2 font-medium">
+                    Як це працює:
+                  </p>
+                  <ol className="list-decimal space-y-1 pl-5">
+                    <li>Скопіюйте промпт нижче.</li>
+                    <li>
+                      Відкрийте{" "}
+                      <a
+                        href="https://claude.ai"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-medium text-purple-600 underline dark:text-purple-400"
+                      >
+                        claude.ai
+                      </a>{" "}
+                      і вставте промпт + ваш матеріал.
+                    </li>
+                    <li>Скопіюйте JSON-відповідь Claude і вставте в поле нижче.</li>
+                    <li>Натисніть «Імпортувати».</li>
+                  </ol>
+                </div>
+
+                <div>
+                  <div className="mb-1 flex items-center justify-between">
+                    <label className="text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                      Промпт для Claude
+                    </label>
+                    <button
+                      type="button"
+                      onClick={copyClaudePrompt}
+                      disabled={!claudePrompt}
+                      className="rounded bg-zinc-100 px-2 py-1 text-[11px] font-medium text-zinc-700 hover:bg-zinc-200 disabled:opacity-50 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
+                    >
+                      {promptCopied ? "✓ Скопійовано" : "Копіювати промпт"}
+                    </button>
+                  </div>
+                  <textarea
+                    readOnly
+                    value={claudePrompt ?? "Завантаження..."}
+                    rows={6}
+                    className="w-full rounded-lg border border-zinc-200 bg-zinc-50 p-2 font-mono text-[11px] text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    JSON з питаннями
+                  </label>
+                  <textarea
+                    value={importJsonText}
+                    onChange={(e) => setImportJsonText(e.target.value)}
+                    rows={10}
+                    placeholder='[{"type": "SINGLE_CHOICE", "text": "...", "weight": 1, "options": [...]}, ...]'
+                    className="w-full rounded-lg border border-zinc-200 bg-zinc-50 p-2 font-mono text-xs text-zinc-900 outline-none focus:border-purple-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-50"
+                  />
+                  <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                    Можна вставляти або готовий масив, або об&apos;єкт з полем{" "}
+                    <code className="rounded bg-zinc-200 px-1 dark:bg-zinc-700">questions</code>.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {importMode === "DOCUMENT" && (
+              <div className="space-y-3">
+                <div className="rounded-lg border border-purple-200 bg-purple-50 p-3 text-xs text-zinc-700 dark:border-purple-900 dark:bg-purple-950/30 dark:text-zinc-300">
+                  Завантажте PDF або Word документ — Claude автоматично прочитає його і
+                  згенерує питання у вашому банку. Підтримуються файли до 20 МБ.
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    Файл (PDF або DOCX)
+                  </label>
+                  <input
+                    type="file"
+                    accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    onChange={(e) => setImportDocFile(e.target.files?.[0] ?? null)}
+                    className="w-full rounded-lg border border-zinc-200 bg-zinc-50 p-2 text-xs text-zinc-900 file:mr-2 file:rounded file:border-0 file:bg-purple-600 file:px-3 file:py-1 file:text-white hover:file:bg-purple-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-50"
+                  />
+                  {importDocFile && (
+                    <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                      Обрано: {importDocFile.name} ({Math.round(importDocFile.size / 1024)} КБ)
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                    Кількість питань для генерації
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={importDocCount}
+                    onChange={(e) => setImportDocCount(Number(e.target.value) || 10)}
+                    className="w-32 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-sm text-zinc-900 outline-none focus:border-purple-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-50"
+                  />
+                </div>
+              </div>
+            )}
+
+            {importResult && (
+              <div className="mt-3 rounded-lg border border-zinc-200 bg-zinc-50 p-2 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                {importResult}
+              </div>
+            )}
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={importBusy}
+                onClick={() => setShowImportModal(false)}
+                className="rounded-lg bg-zinc-200 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-300 disabled:opacity-50 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600"
+              >
+                Закрити
+              </button>
+              <button
+                type="button"
+                disabled={importBusy}
+                onClick={importMode === "JSON" ? submitJsonImport : submitDocumentImport}
+                className="rounded-lg bg-purple-600 px-4 py-2 text-sm font-semibold text-white hover:bg-purple-700 disabled:opacity-50"
+              >
+                {importBusy
+                  ? "Обробка..."
+                  : importMode === "JSON"
+                    ? "Імпортувати"
+                    : "Згенерувати та імпортувати"}
+              </button>
+            </div>
           </div>
         </div>
       )}
