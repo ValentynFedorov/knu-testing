@@ -40,6 +40,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-${NEXTAUTH_SECRET}}
       PISTON_URL: http://piston:2000/api/v2/execute
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       PORT: 4000
     volumes:
       - uploads:/app/uploads
