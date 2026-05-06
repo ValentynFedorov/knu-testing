@@ -3,14 +3,17 @@
 import { useEffect, useRef } from "react";
 import { logIntegrityEvent } from "@/lib/api";
 
-const COOLDOWN_MS = 15000; // 15s between speech events
-const SPEECH_THRESHOLD = 15; // volume level to consider as speech (0-128)
-const SPEECH_MIN_DURATION_MS = 1500; // minimum duration of speech to log
-const CHECK_INTERVAL_MS = 200; // how often to check audio levels
-const DEBUG_LOG_INTERVAL_MS = 5000; // log volume diagnostics every 5s
-const TRANSCRIPT_WINDOW_MS = 30_000; // keep transcripts from last 30s
-const SPEECH_LANG = "uk-UA"; // Ukrainian
+const COOLDOWN_MS = 12000;
+const SPEECH_THRESHOLD = 15; // average frequency level (0-128) to count as speech
+const SPEECH_MIN_DURATION_MS = 1500;
+const CHECK_INTERVAL_MS = 200;
+const DEBUG_LOG_INTERVAL_MS = 5000;
+const TRANSCRIPT_WINDOW_MS = 30_000;
+const SPEECH_LANG = "uk-UA";
 const FALLBACK_LANG = "en-US";
+const RECORDER_TIMESLICE_MS = 1000;
+const ROLLING_BUFFER_SECONDS = 12; // keep last 12s of audio chunks
+const MAX_AUDIO_BLOB_BYTES = 1_000_000; // safety cap (1 MB)
 
 interface TranscriptEntry {
   text: string;
@@ -18,14 +21,23 @@ interface TranscriptEntry {
   timestamp: number;
 }
 
+interface AudioChunk {
+  blob: Blob;
+  timestamp: number;
+}
+
 /**
- * Monitors audio levels from the existing media stream to detect speech.
- * - AudioContext analyser measures volume (offline-friendly).
- * - Web Speech API (SpeechRecognition) transcribes spoken words in parallel.
+ * Records the proctoring mic stream + monitors volume to detect speech.
  *
- * Web Speech API requires Chrome/Edge and an internet connection (uses Google's STT).
- * If unavailable or denied, the volume analyser still logs SUSPICIOUS_SPEECH events
- * without a transcript.
+ * Three subsystems run together:
+ * 1. AudioContext analyser: cheap volume monitoring → triggers SUSPICIOUS_SPEECH events.
+ * 2. MediaRecorder rolling buffer: keeps the last ~12s of audio chunks. When a
+ *    speech event fires we splice the relevant window, base64-encode it, and
+ *    attach as `metadata.audioBase64` so the teacher can listen back. The
+ *    backend can also auto-transcribe these on the server.
+ * 3. Web Speech API (best-effort): if the browser supports it AND can access
+ *    the mic separately, we get live transcription too. Often fails on Chrome
+ *    when getUserMedia already has the mic — that's why we have (2) as backup.
  */
 export function useSpeechMonitor(
   active: boolean,
@@ -38,14 +50,83 @@ export function useSpeechMonitor(
   const questionIdRef = useRef(attemptQuestionId);
   const speechStartRef = useRef<number | null>(null);
   const transcriptBufferRef = useRef<TranscriptEntry[]>([]);
+  const audioChunksRef = useRef<AudioChunk[]>([]);
+  const recorderMimeRef = useRef<string>("audio/webm");
 
-  // Keep refs in sync
   useEffect(() => {
     attemptIdRef.current = attemptId;
     questionIdRef.current = attemptQuestionId;
   }, [attemptId, attemptQuestionId]);
 
-  // ----- Web Speech API: continuous transcription -----
+  // ----- MediaRecorder rolling buffer -----
+  useEffect(() => {
+    if (!active || !attemptId || !mediaStream) return;
+    const audioTracks = mediaStream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      console.warn("[SpeechMonitor] No audio tracks — recorder skipped");
+      return;
+    }
+
+    // Pick the best available mime — we only need audio.
+    const candidates = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/ogg;codecs=opus",
+      "audio/mp4",
+    ];
+    let mime = "";
+    for (const c of candidates) {
+      if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(c)) {
+        mime = c;
+        break;
+      }
+    }
+    if (!mime) {
+      console.warn("[SpeechMonitor] MediaRecorder: no supported audio MIME");
+      return;
+    }
+    recorderMimeRef.current = mime.split(";")[0];
+    console.log(`[SpeechMonitor] MediaRecorder mime: ${mime}`);
+
+    let recorder: MediaRecorder | null = null;
+    let stopped = false;
+    try {
+      const audioOnly = new MediaStream(audioTracks);
+      recorder = new MediaRecorder(audioOnly, {
+        mimeType: mime,
+        audioBitsPerSecond: 32_000,
+      });
+      recorder.ondataavailable = (event: BlobEvent) => {
+        if (!event.data || event.data.size === 0) return;
+        audioChunksRef.current.push({ blob: event.data, timestamp: Date.now() });
+        // Trim chunks older than rolling window
+        const cutoff = Date.now() - ROLLING_BUFFER_SECONDS * 1000;
+        audioChunksRef.current = audioChunksRef.current.filter(
+          (c) => c.timestamp >= cutoff,
+        );
+      };
+      recorder.onerror = (e) => {
+        console.error("[SpeechMonitor] MediaRecorder error:", e);
+      };
+      recorder.start(RECORDER_TIMESLICE_MS);
+      console.log("[SpeechMonitor] MediaRecorder started");
+    } catch (err) {
+      console.error("[SpeechMonitor] Failed to start MediaRecorder:", err);
+    }
+
+    return () => {
+      stopped = true;
+      try {
+        if (recorder && recorder.state !== "inactive") recorder.stop();
+      } catch {
+        // ignore
+      }
+      audioChunksRef.current = [];
+      console.log("[SpeechMonitor] MediaRecorder stopped");
+    };
+  }, [active, attemptId, mediaStream]);
+
+  // ----- Web Speech API (best-effort transcription) -----
   useEffect(() => {
     if (!active || !attemptId) return;
     if (typeof window === "undefined") return;
@@ -53,7 +134,7 @@ export function useSpeechMonitor(
     const SpeechRecognitionCtor =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognitionCtor) {
-      console.warn("[SpeechMonitor] Web Speech API not supported in this browser");
+      console.warn("[SpeechMonitor] Web Speech API not supported");
       return;
     }
 
@@ -68,36 +149,22 @@ export function useSpeechMonitor(
       try {
         recognition = new SpeechRecognitionCtor();
         recognition.continuous = true;
-        recognition.interimResults = true; // get partial results too
+        recognition.interimResults = true;
         recognition.maxAlternatives = 1;
         recognition.lang = currentLang;
 
         recognition.onstart = () => {
-          console.log(`[SpeechMonitor] Recognition started (lang=${currentLang})`);
+          console.log(`[SpeechMonitor] WebSpeech started (lang=${currentLang})`);
           consecutiveErrors = 0;
         };
-
-        recognition.onspeechstart = () => {
-          console.log("[SpeechMonitor] speechstart event");
-        };
-
-        recognition.onsoundstart = () => {
-          console.log("[SpeechMonitor] soundstart event");
-        };
-
         recognition.onresult = (event: any) => {
           for (let i = event.resultIndex; i < event.results.length; i++) {
             const result = event.results[i];
             const alt = result[0];
             if (!alt) continue;
             const text = (alt.transcript || "").trim();
-            if (!text) continue;
-            // Only push final results to avoid duplicates from interim
-            if (!result.isFinal) {
-              console.log(`[SpeechMonitor] interim: "${text}"`);
-              continue;
-            }
-            console.log(`[SpeechMonitor] FINAL: "${text}" (conf=${alt.confidence})`);
+            if (!text || !result.isFinal) continue;
+            console.log(`[SpeechMonitor] WebSpeech FINAL: "${text}"`);
             transcriptBufferRef.current.push({
               text,
               confidence: typeof alt.confidence === "number" ? alt.confidence : 0,
@@ -109,38 +176,28 @@ export function useSpeechMonitor(
             );
           }
         };
-
         recognition.onerror = (event: any) => {
-          console.warn("[SpeechMonitor] Recognition error:", event.error);
+          console.warn("[SpeechMonitor] WebSpeech error:", event.error);
           consecutiveErrors++;
           if (event.error === "language-not-supported" && currentLang !== FALLBACK_LANG) {
             currentLang = FALLBACK_LANG;
           }
-          // not-allowed and service-not-allowed cannot be recovered automatically
           if (event.error === "not-allowed" || event.error === "service-not-allowed") {
-            console.error(
-              "[SpeechMonitor] Permission denied or service blocked. Transcription disabled.",
-            );
+            console.error("[SpeechMonitor] WebSpeech permission blocked — transcription disabled");
             stopped = true;
           }
         };
-
         recognition.onend = () => {
           if (stopped) return;
-          // Throttle restart if we keep erroring
           const delay = consecutiveErrors > 3 ? 5000 : 500;
           restartTimer = setTimeout(start, delay);
         };
-
         recognition.start();
       } catch (err) {
-        console.warn("[SpeechMonitor] Failed to start recognition:", err);
-        if (!stopped) {
-          restartTimer = setTimeout(start, 2000);
-        }
+        console.warn("[SpeechMonitor] WebSpeech start failed:", err);
+        if (!stopped) restartTimer = setTimeout(start, 2000);
       }
     }
-
     start();
 
     return () => {
@@ -151,32 +208,26 @@ export function useSpeechMonitor(
           recognition.onend = null;
           recognition.onresult = null;
           recognition.onerror = null;
-          recognition.onstart = null;
-          recognition.onspeechstart = null;
-          recognition.onsoundstart = null;
           recognition.stop();
         } catch {
           // ignore
         }
       }
       transcriptBufferRef.current = [];
-      console.log("[SpeechMonitor] Recognition stopped");
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, attemptId]);
 
-  // ----- AudioContext: volume-based speech detection -----
+  // ----- AudioContext volume detector -----
   useEffect(() => {
     if (!active || !attemptId || !mediaStream) return;
-
     const audioTracks = mediaStream.getAudioTracks();
     if (audioTracks.length === 0) {
-      console.warn("[SpeechMonitor] No audio tracks in media stream");
+      console.warn("[SpeechMonitor] No audio tracks");
       return;
     }
     console.log(
-      `[SpeechMonitor] Starting volume analyser (audio tracks: ${audioTracks.length}, ` +
-        `enabled: ${audioTracks[0]?.enabled}, label: "${audioTracks[0]?.label}")`,
+      `[SpeechMonitor] Volume analyser starting (tracks=${audioTracks.length})`,
     );
 
     let stopped = false;
@@ -188,43 +239,33 @@ export function useSpeechMonitor(
 
     try {
       audioContext = new AudioContext();
-      // Modern browsers create AudioContext in suspended state — must resume.
-      // Even though we're inside a useEffect started by a button click handler,
-      // some browsers still gate this.
       if (audioContext.state === "suspended") {
-        audioContext.resume().then(
-          () => console.log("[SpeechMonitor] AudioContext resumed"),
-          (err) => console.warn("[SpeechMonitor] AudioContext resume failed:", err),
-        );
+        audioContext.resume().catch(() => {});
       }
-
       const source = audioContext.createMediaStreamSource(mediaStream);
       analyser = audioContext.createAnalyser();
       analyser.fftSize = 512;
       analyser.smoothingTimeConstant = 0.3;
       source.connect(analyser);
-
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
-      intervalId = setInterval(() => {
+      intervalId = setInterval(async () => {
         if (stopped || !analyser || !audioContext) return;
         if (audioContext.state === "suspended") {
           audioContext.resume().catch(() => {});
         }
-
         analyser.getByteFrequencyData(dataArray);
         let sum = 0;
         for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
         const avg = sum / dataArray.length;
         if (avg > maxAvgSeen) maxAvgSeen = avg;
 
-        // Periodic diagnostic logging so we can debug levels
         const now = Date.now();
         if (now - lastDebugLog > DEBUG_LOG_INTERVAL_MS) {
           lastDebugLog = now;
           console.log(
-            `[SpeechMonitor] avgVolume=${avg.toFixed(1)} max=${maxAvgSeen.toFixed(1)} ` +
-              `threshold=${SPEECH_THRESHOLD} ctxState=${audioContext.state}`,
+            `[SpeechMonitor] avgVol=${avg.toFixed(1)} max=${maxAvgSeen.toFixed(1)} ` +
+              `chunks=${audioChunksRef.current.length}`,
           );
         }
 
@@ -237,53 +278,86 @@ export function useSpeechMonitor(
           const duration = now - startedAt;
           speechStartRef.current = null;
 
-          if (duration >= SPEECH_MIN_DURATION_MS) {
-            if (now - lastLoggedRef.current > COOLDOWN_MS) {
-              lastLoggedRef.current = now;
+          if (
+            duration >= SPEECH_MIN_DURATION_MS &&
+            now - lastLoggedRef.current > COOLDOWN_MS
+          ) {
+            lastLoggedRef.current = now;
 
-              const windowStart = startedAt - 1000;
-              const fragments = transcriptBufferRef.current.filter(
-                (e) => e.timestamp >= windowStart,
-              );
-              const transcript = fragments.map((e) => e.text).join(" ").trim();
-              const avgConfidence =
-                fragments.length > 0
-                  ? Math.round(
-                      (fragments.reduce((s, e) => s + (e.confidence || 0), 0) /
-                        fragments.length) *
-                        100,
-                    )
-                  : null;
+            // Take a slice of audio buffer covering the speech window
+            // (including 1s padding before and after for context).
+            const sliceStart = startedAt - 1000;
+            const relevantChunks = audioChunksRef.current
+              .filter((c) => c.timestamp >= sliceStart)
+              .slice(-Math.ceil((duration + 2000) / RECORDER_TIMESLICE_MS));
 
-              console.log(
-                `[SpeechMonitor] Speech detected: ${Math.round(duration / 1000)}s` +
-                  (transcript ? ` — "${transcript}"` : " (no transcript)"),
-              );
-
-              logIntegrityEvent({
-                attemptId: attemptIdRef.current!,
-                attemptQuestionId: questionIdRef.current ?? undefined,
-                type: "SUSPICIOUS_SPEECH",
-                startedAt: new Date(startedAt).toISOString(),
-                endedAt: new Date().toISOString(),
-                metadata: {
-                  durationMs: duration,
-                  durationSec: Math.round(duration / 1000),
-                  transcript: transcript || undefined,
-                  confidence: avgConfidence,
-                  reason: transcript
-                    ? `Виявлено мовлення (${Math.round(duration / 1000)}с)`
-                    : `Звук протягом ${Math.round(duration / 1000)}с`,
-                },
-              }).catch(console.error);
+            let audioBase64: string | undefined;
+            let audioMime: string | undefined;
+            if (relevantChunks.length > 0) {
+              try {
+                const blob = new Blob(
+                  relevantChunks.map((c) => c.blob),
+                  { type: recorderMimeRef.current },
+                );
+                if (blob.size <= MAX_AUDIO_BLOB_BYTES) {
+                  audioBase64 = await blobToBase64(blob);
+                  audioMime = recorderMimeRef.current;
+                  console.log(
+                    `[SpeechMonitor] Audio clip captured: ${blob.size} bytes ` +
+                      `(${relevantChunks.length} chunks)`,
+                  );
+                } else {
+                  console.warn(
+                    `[SpeechMonitor] Audio clip too large (${blob.size} bytes), skipping`,
+                  );
+                }
+              } catch (err) {
+                console.warn("[SpeechMonitor] Failed to encode audio:", err);
+              }
             }
+
+            const fragments = transcriptBufferRef.current.filter(
+              (e) => e.timestamp >= sliceStart,
+            );
+            const transcript = fragments.map((e) => e.text).join(" ").trim();
+            const avgConfidence =
+              fragments.length > 0
+                ? Math.round(
+                    (fragments.reduce((s, e) => s + (e.confidence || 0), 0) /
+                      fragments.length) *
+                      100,
+                  )
+                : null;
+
+            console.log(
+              `[SpeechMonitor] Speech ${Math.round(duration / 1000)}s` +
+                (transcript ? ` — "${transcript}"` : "") +
+                (audioBase64 ? " [audio attached]" : ""),
+            );
+
+            logIntegrityEvent({
+              attemptId: attemptIdRef.current!,
+              attemptQuestionId: questionIdRef.current ?? undefined,
+              type: "SUSPICIOUS_SPEECH",
+              startedAt: new Date(startedAt).toISOString(),
+              endedAt: new Date().toISOString(),
+              metadata: {
+                durationMs: duration,
+                durationSec: Math.round(duration / 1000),
+                transcript: transcript || undefined,
+                confidence: avgConfidence,
+                audioBase64,
+                audioMime,
+                reason: transcript
+                  ? `Виявлено мовлення (${Math.round(duration / 1000)}с)`
+                  : `Звук протягом ${Math.round(duration / 1000)}с`,
+              },
+            }).catch(console.error);
           }
         }
       }, CHECK_INTERVAL_MS);
-
-      console.log("[SpeechMonitor] Audio monitoring active");
     } catch (err) {
-      console.error("[SpeechMonitor] Failed to set up audio monitoring:", err);
+      console.error("[SpeechMonitor] Volume setup failed:", err);
     }
 
     return () => {
@@ -293,8 +367,21 @@ export function useSpeechMonitor(
         audioContext.close().catch(() => {});
       }
       speechStartRef.current = null;
-      console.log("[SpeechMonitor] Stopped audio monitoring");
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, attemptId, mediaStream]);
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      // Strip "data:audio/...;base64,"
+      const idx = result.indexOf("base64,");
+      resolve(idx >= 0 ? result.slice(idx + 7) : result);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
 }
