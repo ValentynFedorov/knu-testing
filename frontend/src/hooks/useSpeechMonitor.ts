@@ -4,9 +4,10 @@ import { useEffect, useRef } from "react";
 import { logIntegrityEvent } from "@/lib/api";
 
 const COOLDOWN_MS = 15000; // 15s between speech events
-const SPEECH_THRESHOLD = 30; // volume level to consider as speech (0-128)
-const SPEECH_MIN_DURATION_MS = 2000; // minimum duration of speech to log
+const SPEECH_THRESHOLD = 15; // volume level to consider as speech (0-128)
+const SPEECH_MIN_DURATION_MS = 1500; // minimum duration of speech to log
 const CHECK_INTERVAL_MS = 200; // how often to check audio levels
+const DEBUG_LOG_INTERVAL_MS = 5000; // log volume diagnostics every 5s
 const TRANSCRIPT_WINDOW_MS = 30_000; // keep transcripts from last 30s
 const SPEECH_LANG = "uk-UA"; // Ukrainian
 const FALLBACK_LANG = "en-US";
@@ -19,15 +20,12 @@ interface TranscriptEntry {
 
 /**
  * Monitors audio levels from the existing media stream to detect speech.
- * - AudioContext analyser measures volume to detect when speech occurs (offline-friendly).
+ * - AudioContext analyser measures volume (offline-friendly).
  * - Web Speech API (SpeechRecognition) transcribes spoken words in parallel.
- *   Transcribed text from the last TRANSCRIPT_WINDOW_MS is attached to integrity events.
  *
- * Both run together: volume detection triggers events; recognition fills in the words.
- *
- * Web Speech API requires Chrome/Edge and an internet connection (uses Google's STT
- * servers under the hood). If unavailable, the hook still logs SUSPICIOUS_SPEECH
- * events from the volume analyser without a transcript.
+ * Web Speech API requires Chrome/Edge and an internet connection (uses Google's STT).
+ * If unavailable or denied, the volume analyser still logs SUSPICIOUS_SPEECH events
+ * without a transcript.
  */
 export function useSpeechMonitor(
   active: boolean,
@@ -63,30 +61,48 @@ export function useSpeechMonitor(
     let recognition: any = null;
     let restartTimer: ReturnType<typeof setTimeout> | null = null;
     let currentLang = SPEECH_LANG;
+    let consecutiveErrors = 0;
 
     function start() {
       if (stopped) return;
       try {
         recognition = new SpeechRecognitionCtor();
         recognition.continuous = true;
-        recognition.interimResults = false;
+        recognition.interimResults = true; // get partial results too
         recognition.maxAlternatives = 1;
         recognition.lang = currentLang;
+
+        recognition.onstart = () => {
+          console.log(`[SpeechMonitor] Recognition started (lang=${currentLang})`);
+          consecutiveErrors = 0;
+        };
+
+        recognition.onspeechstart = () => {
+          console.log("[SpeechMonitor] speechstart event");
+        };
+
+        recognition.onsoundstart = () => {
+          console.log("[SpeechMonitor] soundstart event");
+        };
 
         recognition.onresult = (event: any) => {
           for (let i = event.resultIndex; i < event.results.length; i++) {
             const result = event.results[i];
-            if (!result.isFinal) continue;
             const alt = result[0];
             if (!alt) continue;
             const text = (alt.transcript || "").trim();
             if (!text) continue;
+            // Only push final results to avoid duplicates from interim
+            if (!result.isFinal) {
+              console.log(`[SpeechMonitor] interim: "${text}"`);
+              continue;
+            }
+            console.log(`[SpeechMonitor] FINAL: "${text}" (conf=${alt.confidence})`);
             transcriptBufferRef.current.push({
               text,
               confidence: typeof alt.confidence === "number" ? alt.confidence : 0,
               timestamp: Date.now(),
             });
-            // Trim old entries
             const cutoff = Date.now() - TRANSCRIPT_WINDOW_MS;
             transcriptBufferRef.current = transcriptBufferRef.current.filter(
               (e) => e.timestamp >= cutoff,
@@ -96,23 +112,29 @@ export function useSpeechMonitor(
 
         recognition.onerror = (event: any) => {
           console.warn("[SpeechMonitor] Recognition error:", event.error);
-          // Fallback to English if language not supported
+          consecutiveErrors++;
           if (event.error === "language-not-supported" && currentLang !== FALLBACK_LANG) {
             currentLang = FALLBACK_LANG;
+          }
+          // not-allowed and service-not-allowed cannot be recovered automatically
+          if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+            console.error(
+              "[SpeechMonitor] Permission denied or service blocked. Transcription disabled.",
+            );
+            stopped = true;
           }
         };
 
         recognition.onend = () => {
           if (stopped) return;
-          // Auto-restart on disconnect (Chrome limits each session)
-          restartTimer = setTimeout(start, 500);
+          // Throttle restart if we keep erroring
+          const delay = consecutiveErrors > 3 ? 5000 : 500;
+          restartTimer = setTimeout(start, delay);
         };
 
         recognition.start();
-        console.log(`[SpeechMonitor] Recognition started (lang=${currentLang})`);
       } catch (err) {
         console.warn("[SpeechMonitor] Failed to start recognition:", err);
-        // Retry after delay
         if (!stopped) {
           restartTimer = setTimeout(start, 2000);
         }
@@ -129,6 +151,9 @@ export function useSpeechMonitor(
           recognition.onend = null;
           recognition.onresult = null;
           recognition.onerror = null;
+          recognition.onstart = null;
+          recognition.onspeechstart = null;
+          recognition.onsoundstart = null;
           recognition.stop();
         } catch {
           // ignore
@@ -149,86 +174,108 @@ export function useSpeechMonitor(
       console.warn("[SpeechMonitor] No audio tracks in media stream");
       return;
     }
-
-    console.log("[SpeechMonitor] Starting audio level monitoring");
+    console.log(
+      `[SpeechMonitor] Starting volume analyser (audio tracks: ${audioTracks.length}, ` +
+        `enabled: ${audioTracks[0]?.enabled}, label: "${audioTracks[0]?.label}")`,
+    );
 
     let stopped = false;
     let audioContext: AudioContext | null = null;
     let analyser: AnalyserNode | null = null;
     let intervalId: ReturnType<typeof setInterval> | null = null;
+    let lastDebugLog = 0;
+    let maxAvgSeen = 0;
 
     try {
       audioContext = new AudioContext();
+      // Modern browsers create AudioContext in suspended state — must resume.
+      // Even though we're inside a useEffect started by a button click handler,
+      // some browsers still gate this.
+      if (audioContext.state === "suspended") {
+        audioContext.resume().then(
+          () => console.log("[SpeechMonitor] AudioContext resumed"),
+          (err) => console.warn("[SpeechMonitor] AudioContext resume failed:", err),
+        );
+      }
+
       const source = audioContext.createMediaStreamSource(mediaStream);
       analyser = audioContext.createAnalyser();
-      analyser.fftSize = 256;
-      analyser.smoothingTimeConstant = 0.5;
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.3;
       source.connect(analyser);
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
       intervalId = setInterval(() => {
-        if (stopped || !analyser) return;
+        if (stopped || !analyser || !audioContext) return;
+        if (audioContext.state === "suspended") {
+          audioContext.resume().catch(() => {});
+        }
 
         analyser.getByteFrequencyData(dataArray);
         let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) {
-          sum += dataArray[i];
-        }
+        for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
         const avg = sum / dataArray.length;
+        if (avg > maxAvgSeen) maxAvgSeen = avg;
+
+        // Periodic diagnostic logging so we can debug levels
+        const now = Date.now();
+        if (now - lastDebugLog > DEBUG_LOG_INTERVAL_MS) {
+          lastDebugLog = now;
+          console.log(
+            `[SpeechMonitor] avgVolume=${avg.toFixed(1)} max=${maxAvgSeen.toFixed(1)} ` +
+              `threshold=${SPEECH_THRESHOLD} ctxState=${audioContext.state}`,
+          );
+        }
 
         if (avg > SPEECH_THRESHOLD) {
           if (speechStartRef.current === null) {
-            speechStartRef.current = Date.now();
+            speechStartRef.current = now;
           }
-        } else {
-          if (speechStartRef.current !== null) {
-            const startedAt = speechStartRef.current;
-            const duration = Date.now() - startedAt;
-            speechStartRef.current = null;
+        } else if (speechStartRef.current !== null) {
+          const startedAt = speechStartRef.current;
+          const duration = now - startedAt;
+          speechStartRef.current = null;
 
-            if (duration >= SPEECH_MIN_DURATION_MS) {
-              const now = Date.now();
-              if (now - lastLoggedRef.current > COOLDOWN_MS) {
-                lastLoggedRef.current = now;
+          if (duration >= SPEECH_MIN_DURATION_MS) {
+            if (now - lastLoggedRef.current > COOLDOWN_MS) {
+              lastLoggedRef.current = now;
 
-                // Collect transcript fragments overlapping the speech window
-                const windowStart = startedAt - 1000; // small grace window
-                const fragments = transcriptBufferRef.current.filter(
-                  (e) => e.timestamp >= windowStart,
-                );
-                const transcript = fragments.map((e) => e.text).join(" ").trim();
-                const avgConfidence =
-                  fragments.length > 0
-                    ? Math.round(
-                        (fragments.reduce((s, e) => s + (e.confidence || 0), 0) /
-                          fragments.length) *
-                          100,
-                      )
-                    : null;
+              const windowStart = startedAt - 1000;
+              const fragments = transcriptBufferRef.current.filter(
+                (e) => e.timestamp >= windowStart,
+              );
+              const transcript = fragments.map((e) => e.text).join(" ").trim();
+              const avgConfidence =
+                fragments.length > 0
+                  ? Math.round(
+                      (fragments.reduce((s, e) => s + (e.confidence || 0), 0) /
+                        fragments.length) *
+                        100,
+                    )
+                  : null;
 
-                console.log(
-                  `[SpeechMonitor] Speech detected: ${Math.round(duration / 1000)}s` +
-                    (transcript ? ` — "${transcript}"` : ""),
-                );
+              console.log(
+                `[SpeechMonitor] Speech detected: ${Math.round(duration / 1000)}s` +
+                  (transcript ? ` — "${transcript}"` : " (no transcript)"),
+              );
 
-                logIntegrityEvent({
-                  attemptId: attemptIdRef.current!,
-                  attemptQuestionId: questionIdRef.current ?? undefined,
-                  type: "SUSPICIOUS_SPEECH",
-                  startedAt: new Date(startedAt).toISOString(),
-                  endedAt: new Date().toISOString(),
-                  metadata: {
-                    durationMs: duration,
-                    durationSec: Math.round(duration / 1000),
-                    transcript: transcript || undefined,
-                    confidence: avgConfidence,
-                    reason: transcript
-                      ? `Виявлено мовлення (${Math.round(duration / 1000)}с)`
-                      : `Звук протягом ${Math.round(duration / 1000)}с`,
-                  },
-                }).catch(console.error);
-              }
+              logIntegrityEvent({
+                attemptId: attemptIdRef.current!,
+                attemptQuestionId: questionIdRef.current ?? undefined,
+                type: "SUSPICIOUS_SPEECH",
+                startedAt: new Date(startedAt).toISOString(),
+                endedAt: new Date().toISOString(),
+                metadata: {
+                  durationMs: duration,
+                  durationSec: Math.round(duration / 1000),
+                  transcript: transcript || undefined,
+                  confidence: avgConfidence,
+                  reason: transcript
+                    ? `Виявлено мовлення (${Math.round(duration / 1000)}с)`
+                    : `Звук протягом ${Math.round(duration / 1000)}с`,
+                },
+              }).catch(console.error);
             }
           }
         }
