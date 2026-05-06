@@ -444,7 +444,7 @@ export default function StudentAttemptPage() {
                   </div>
                 )}
                 {v.type === "SUSPICIOUS_SPEECH" && v.metadata && (
-                  <div className="mt-0.5 space-y-0.5">
+                  <div className="mt-0.5 space-y-1">
                     <div className="text-orange-600 dark:text-orange-400">
                       {v.metadata.reason}
                     </div>
@@ -455,6 +455,14 @@ export default function StudentAttemptPage() {
                           <span className="ml-1 not-italic">({v.metadata.confidence}%)</span>
                         )}
                       </div>
+                    )}
+                    {v.metadata.audioBase64 && (
+                      <audio
+                        controls
+                        preload="none"
+                        className="h-8 w-full max-w-md"
+                        src={`data:${v.metadata.audioMime || "audio/webm"};base64,${v.metadata.audioBase64}`}
+                      />
                     )}
                   </div>
                 )}

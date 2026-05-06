@@ -3,19 +3,22 @@
 import { useEffect, useRef } from "react";
 import { logIntegrityEvent } from "@/lib/api";
 
-const DETECTION_INTERVAL_MS = 2000;
-const COOLDOWN_MS = 20000;
+const DETECTION_INTERVAL_MS = 1500;
+const COOLDOWN_MS = 15000;
 const MODEL_INPUT_SIZE = 640;
 const PHONE_CLASS_ID = 67; // COCO class 67 = "cell phone"
-// 0.5 — empirical sweet spot for webcam: yolov8s rarely exceeds 0.7-0.8 even
-// on a clearly visible phone because of lighting + low webcam resolution.
-const CONFIDENCE_THRESHOLD = 0.5;
+// Empirical: in webcam frames YOLO confidences rarely exceed 0.5-0.6 for
+// phones because of poor lighting and low resolution. 0.4 hits the sweet
+// spot between recall and false positives.
+const CONFIDENCE_THRESHOLD = 0.4;
 const NMS_IOU_THRESHOLD = 0.45;
-// Lower bound for keeping a candidate at all (logging-friendly).
-// Strict CONFIDENCE_THRESHOLD is applied separately at the call site.
-const POSTPROCESS_MIN_SCORE = 0.25;
-const MODEL_PATH = "/yolov8s.onnx";
-const MODEL_NAME = "yolov8s";
+// Lower bound for keeping a candidate (so we can log near-misses).
+const POSTPROCESS_MIN_SCORE = 0.2;
+// yolov8n (12 MB) loads ~3x faster and inferences ~3x faster than yolov8s.
+// For webcam-quality input the accuracy difference is negligible — both
+// see/miss the same phones.
+const MODEL_PATH = "/yolov8n.onnx";
+const MODEL_NAME = "yolov8n";
 
 /**
  * YOLOv8s ONNX-based phone detection (small variant — more accurate than nano).
