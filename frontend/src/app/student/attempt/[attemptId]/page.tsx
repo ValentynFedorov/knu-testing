@@ -204,21 +204,27 @@ function useAntiCheatControls(attemptId: string | null, activeQuestionId: string
     if (!attemptId) return;
 
     // ----- Black-screen overlay for screenshot detection -----
-    // We keep a single fixed-position overlay that we toggle to black
-    // for ~2s when a screenshot shortcut is detected. The overlay sits
-    // above everything (max z-index) and covers the whole viewport.
+    // The overlay must be re-parented into the fullscreen element when
+    // the test enters fullscreen mode — otherwise the browser hides
+    // anything outside the fullscreen container.
     const overlay = document.createElement("div");
     overlay.id = "knu-screenshot-blackout";
     overlay.style.cssText = [
       "position: fixed",
-      "inset: 0",
+      "top: 0",
+      "left: 0",
+      "right: 0",
+      "bottom: 0",
+      "width: 100vw",
+      "height: 100vh",
       "background: #000",
       "z-index: 2147483647", // max int32
       "pointer-events: auto",
       "display: none",
       "color: #fff",
       "font-family: sans-serif",
-      "font-size: 18px",
+      "font-size: 22px",
+      "font-weight: 600",
       "align-items: center",
       "justify-content: center",
       "text-align: center",
@@ -227,21 +233,41 @@ function useAntiCheatControls(attemptId: string | null, activeQuestionId: string
     overlay.textContent = "Спроба зробити скріншот зафіксована";
     document.body.appendChild(overlay);
 
+    function ensureOverlayInRightParent() {
+      const parent = (document.fullscreenElement as HTMLElement | null) || document.body;
+      if (overlay.parentElement !== parent) {
+        parent.appendChild(overlay);
+      }
+    }
+
+    function handleFullscreenChange() {
+      ensureOverlayInRightParent();
+    }
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
+
     let blackoutTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastBlackoutAt = 0;
     function triggerBlackout(reason: string) {
-      // Show overlay
+      // Throttle duplicate triggers from keydown+keyup of the same press
+      const now = Date.now();
+      const isDuplicate = now - lastBlackoutAt < 200;
+      lastBlackoutAt = now;
+
+      ensureOverlayInRightParent();
       overlay.style.display = "flex";
-      // Also clear clipboard so the captured image isn't pastable
       navigator.clipboard.writeText("").catch(() => {});
-      // Log integrity event
-      logIntegrityEvent({
-        attemptId: attemptId!,
-        attemptQuestionId: activeQuestionId ?? undefined,
-        type: "SCREENSHOT",
-        startedAt: new Date().toISOString(),
-        metadata: { key: reason },
-      }).catch(console.error);
-      // Reset timer
+
+      if (!isDuplicate) {
+        logIntegrityEvent({
+          attemptId: attemptId!,
+          attemptQuestionId: activeQuestionId ?? undefined,
+          type: "SCREENSHOT",
+          startedAt: new Date().toISOString(),
+          metadata: { key: reason },
+        }).catch(console.error);
+      }
+
       if (blackoutTimer) clearTimeout(blackoutTimer);
       blackoutTimer = setTimeout(() => {
         overlay.style.display = "none";
@@ -319,6 +345,29 @@ function useAntiCheatControls(attemptId: string | null, activeQuestionId: string
       }
     }
 
+    // Windows fires PrintScreen on `keyup` rather than `keydown` in many
+    // Chrome configurations — handle both to catch every press.
+    function handleKeyUp(e: KeyboardEvent) {
+      if (e.key === "PrintScreen") {
+        triggerBlackout(
+          e.metaKey ? "Win+PrintScreen" : e.altKey ? "Alt+PrintScreen" : "PrintScreen",
+        );
+        e.preventDefault();
+      }
+    }
+
+    // When focus leaves the window — could be the snipping tool opening,
+    // alt-tab, or anything that may capture the screen. Pre-emptively
+    // black out so a subsequent screenshot is dark.
+    function handleBlur() {
+      triggerBlackout("window-blur");
+    }
+
+    // Some shortcuts route through `window` rather than `document` —
+    // watch both.
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", handleBlur);
+
     // Disable drag start (prevent dragging text/images)
     function handleDragStart(e: DragEvent) {
       e.preventDefault();
@@ -354,6 +403,10 @@ function useAntiCheatControls(attemptId: string | null, activeQuestionId: string
       document.removeEventListener("keydown", handleKeyDown);
       document.removeEventListener("dragstart", handleDragStart);
       document.removeEventListener("selectstart", handleSelectStart);
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener("webkitfullscreenchange", handleFullscreenChange);
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", handleBlur);
       document.body.style.userSelect = "";
       document.body.style.webkitUserSelect = "";
       if (blackoutTimer) clearTimeout(blackoutTimer);
