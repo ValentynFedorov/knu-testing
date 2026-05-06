@@ -11,18 +11,14 @@ const DEBUG_LOG_INTERVAL_MS = 5000;
 const TRANSCRIPT_WINDOW_MS = 30_000;
 const SPEECH_LANG = "uk-UA";
 const FALLBACK_LANG = "en-US";
-const RECORDER_TIMESLICE_MS = 1000;
-const ROLLING_BUFFER_SECONDS = 12; // keep last 12s of audio chunks
-const MAX_AUDIO_BLOB_BYTES = 1_000_000; // safety cap (1 MB)
+// Recorder is rotated proactively so the produced WebM file stays bounded.
+// On each rotation MediaRecorder.stop() finalizes a fully-playable file.
+const ROTATION_INTERVAL_MS = 15_000;
+const MAX_AUDIO_BLOB_BYTES = 2_000_000; // safety cap (2 MB)
 
 interface TranscriptEntry {
   text: string;
   confidence: number;
-  timestamp: number;
-}
-
-interface AudioChunk {
-  blob: Blob;
   timestamp: number;
 }
 
@@ -50,15 +46,22 @@ export function useSpeechMonitor(
   const questionIdRef = useRef(attemptQuestionId);
   const speechStartRef = useRef<number | null>(null);
   const transcriptBufferRef = useRef<TranscriptEntry[]>([]);
-  const audioChunksRef = useRef<AudioChunk[]>([]);
   const recorderMimeRef = useRef<string>("audio/webm");
+  // captureBlobRef.current() returns a fully-playable Blob (or null).
+  // The recorder effect installs the implementation; the volume-detector
+  // effect calls it.
+  const captureBlobRef = useRef<(() => Promise<Blob | null>) | null>(null);
+  // lastFinalizedBlobRef holds the most recently rotated, complete file
+  // — used as fallback if the active recorder hasn't started yet.
+  const lastFinalizedBlobRef = useRef<Blob | null>(null);
 
   useEffect(() => {
     attemptIdRef.current = attemptId;
     questionIdRef.current = attemptQuestionId;
   }, [attemptId, attemptQuestionId]);
 
-  // ----- MediaRecorder rolling buffer -----
+  // ----- MediaRecorder with stop/restart pattern -----
+  // Each rotation produces a self-contained playable WebM file.
   useEffect(() => {
     if (!active || !attemptId || !mediaStream) return;
     const audioTracks = mediaStream.getAudioTracks();
@@ -67,7 +70,6 @@ export function useSpeechMonitor(
       return;
     }
 
-    // Pick the best available mime — we only need audio.
     const candidates = [
       "audio/webm;codecs=opus",
       "audio/webm",
@@ -89,39 +91,86 @@ export function useSpeechMonitor(
     console.log(`[SpeechMonitor] MediaRecorder mime: ${mime}`);
 
     let recorder: MediaRecorder | null = null;
+    let chunks: Blob[] = [];
+    let rotationTimer: ReturnType<typeof setTimeout> | null = null;
     let stopped = false;
-    try {
-      const audioOnly = new MediaStream(audioTracks);
-      recorder = new MediaRecorder(audioOnly, {
-        mimeType: mime,
-        audioBitsPerSecond: 32_000,
-      });
-      recorder.ondataavailable = (event: BlobEvent) => {
-        if (!event.data || event.data.size === 0) return;
-        audioChunksRef.current.push({ blob: event.data, timestamp: Date.now() });
-        // Trim chunks older than rolling window
-        const cutoff = Date.now() - ROLLING_BUFFER_SECONDS * 1000;
-        audioChunksRef.current = audioChunksRef.current.filter(
-          (c) => c.timestamp >= cutoff,
-        );
-      };
-      recorder.onerror = (e) => {
-        console.error("[SpeechMonitor] MediaRecorder error:", e);
-      };
-      recorder.start(RECORDER_TIMESLICE_MS);
-      console.log("[SpeechMonitor] MediaRecorder started");
-    } catch (err) {
-      console.error("[SpeechMonitor] Failed to start MediaRecorder:", err);
+    const audioOnly = new MediaStream(audioTracks);
+
+    function startNewRecorder() {
+      if (stopped) return;
+      try {
+        chunks = [];
+        recorder = new MediaRecorder(audioOnly, {
+          mimeType: mime,
+          audioBitsPerSecond: 32_000,
+        });
+        recorder.ondataavailable = (event: BlobEvent) => {
+          if (event.data && event.data.size > 0) chunks.push(event.data);
+        };
+        recorder.onerror = (e) => {
+          console.error("[SpeechMonitor] MediaRecorder error:", e);
+        };
+        recorder.onstop = () => {
+          if (chunks.length > 0) {
+            const blob = new Blob(chunks, { type: recorder!.mimeType || mime });
+            lastFinalizedBlobRef.current = blob;
+          }
+        };
+        recorder.start(); // no timeslice — chunks come on stop()
+        // Schedule rotation
+        if (rotationTimer) clearTimeout(rotationTimer);
+        rotationTimer = setTimeout(() => {
+          rotateRecorder().catch(console.error);
+        }, ROTATION_INTERVAL_MS);
+      } catch (err) {
+        console.error("[SpeechMonitor] Failed to start MediaRecorder:", err);
+      }
     }
+
+    function rotateRecorder(): Promise<Blob | null> {
+      // Stop the active recorder, wait for onstop, then start a new one.
+      // Returns the just-finalized blob.
+      return new Promise((resolve) => {
+        if (!recorder || recorder.state === "inactive") {
+          resolve(lastFinalizedBlobRef.current);
+          return;
+        }
+        if (rotationTimer) {
+          clearTimeout(rotationTimer);
+          rotationTimer = null;
+        }
+        const r = recorder;
+        const oldOnStop = r.onstop;
+        r.onstop = (event: Event) => {
+          if (oldOnStop) oldOnStop.call(r, event);
+          const blob = lastFinalizedBlobRef.current;
+          if (!stopped) startNewRecorder();
+          resolve(blob);
+        };
+        try {
+          r.stop();
+        } catch (err) {
+          console.warn("[SpeechMonitor] stop() failed:", err);
+          resolve(null);
+        }
+      });
+    }
+
+    // Expose capture function for the volume detector.
+    captureBlobRef.current = rotateRecorder;
+
+    startNewRecorder();
+    console.log("[SpeechMonitor] MediaRecorder started (rotation 15s)");
 
     return () => {
       stopped = true;
+      if (rotationTimer) clearTimeout(rotationTimer);
       try {
         if (recorder && recorder.state !== "inactive") recorder.stop();
       } catch {
         // ignore
       }
-      audioChunksRef.current = [];
+      captureBlobRef.current = null;
       console.log("[SpeechMonitor] MediaRecorder stopped");
     };
   }, [active, attemptId, mediaStream]);
@@ -265,7 +314,7 @@ export function useSpeechMonitor(
           lastDebugLog = now;
           console.log(
             `[SpeechMonitor] avgVol=${avg.toFixed(1)} max=${maxAvgSeen.toFixed(1)} ` +
-              `chunks=${audioChunksRef.current.length}`,
+              `recReady=${captureBlobRef.current !== null}`,
           );
         }
 
@@ -284,38 +333,33 @@ export function useSpeechMonitor(
           ) {
             lastLoggedRef.current = now;
 
-            // Take a slice of audio buffer covering the speech window
-            // (including 1s padding before and after for context).
-            const sliceStart = startedAt - 1000;
-            const relevantChunks = audioChunksRef.current
-              .filter((c) => c.timestamp >= sliceStart)
-              .slice(-Math.ceil((duration + 2000) / RECORDER_TIMESLICE_MS));
-
+            // Force-rotate the recorder — the just-finalized blob is a
+            // fully-playable WebM/Opus file containing the speech segment.
             let audioBase64: string | undefined;
             let audioMime: string | undefined;
-            if (relevantChunks.length > 0) {
+            if (captureBlobRef.current) {
               try {
-                const blob = new Blob(
-                  relevantChunks.map((c) => c.blob),
-                  { type: recorderMimeRef.current },
-                );
-                if (blob.size <= MAX_AUDIO_BLOB_BYTES) {
-                  audioBase64 = await blobToBase64(blob);
-                  audioMime = recorderMimeRef.current;
-                  console.log(
-                    `[SpeechMonitor] Audio clip captured: ${blob.size} bytes ` +
-                      `(${relevantChunks.length} chunks)`,
-                  );
-                } else {
-                  console.warn(
-                    `[SpeechMonitor] Audio clip too large (${blob.size} bytes), skipping`,
-                  );
+                const blob = await captureBlobRef.current();
+                if (blob && blob.size > 0) {
+                  if (blob.size <= MAX_AUDIO_BLOB_BYTES) {
+                    audioBase64 = await blobToBase64(blob);
+                    audioMime = blob.type || recorderMimeRef.current;
+                    console.log(
+                      `[SpeechMonitor] Audio clip captured: ${blob.size} bytes ` +
+                        `(mime=${audioMime})`,
+                    );
+                  } else {
+                    console.warn(
+                      `[SpeechMonitor] Audio clip too large (${blob.size} bytes), skipping`,
+                    );
+                  }
                 }
               } catch (err) {
-                console.warn("[SpeechMonitor] Failed to encode audio:", err);
+                console.warn("[SpeechMonitor] Failed to capture audio:", err);
               }
             }
 
+            const sliceStart = startedAt - 1000;
             const fragments = transcriptBufferRef.current.filter(
               (e) => e.timestamp >= sliceStart,
             );
