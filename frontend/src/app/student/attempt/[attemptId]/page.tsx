@@ -203,6 +203,51 @@ function useAntiCheatControls(attemptId: string | null, activeQuestionId: string
   useEffect(() => {
     if (!attemptId) return;
 
+    // ----- Black-screen overlay for screenshot detection -----
+    // We keep a single fixed-position overlay that we toggle to black
+    // for ~2s when a screenshot shortcut is detected. The overlay sits
+    // above everything (max z-index) and covers the whole viewport.
+    const overlay = document.createElement("div");
+    overlay.id = "knu-screenshot-blackout";
+    overlay.style.cssText = [
+      "position: fixed",
+      "inset: 0",
+      "background: #000",
+      "z-index: 2147483647", // max int32
+      "pointer-events: auto",
+      "display: none",
+      "color: #fff",
+      "font-family: sans-serif",
+      "font-size: 18px",
+      "align-items: center",
+      "justify-content: center",
+      "text-align: center",
+      "padding: 24px",
+    ].join("; ") + ";";
+    overlay.textContent = "Спроба зробити скріншот зафіксована";
+    document.body.appendChild(overlay);
+
+    let blackoutTimer: ReturnType<typeof setTimeout> | null = null;
+    function triggerBlackout(reason: string) {
+      // Show overlay
+      overlay.style.display = "flex";
+      // Also clear clipboard so the captured image isn't pastable
+      navigator.clipboard.writeText("").catch(() => {});
+      // Log integrity event
+      logIntegrityEvent({
+        attemptId: attemptId!,
+        attemptQuestionId: activeQuestionId ?? undefined,
+        type: "SCREENSHOT",
+        startedAt: new Date().toISOString(),
+        metadata: { key: reason },
+      }).catch(console.error);
+      // Reset timer
+      if (blackoutTimer) clearTimeout(blackoutTimer);
+      blackoutTimer = setTimeout(() => {
+        overlay.style.display = "none";
+      }, 2000);
+    }
+
     // Disable right-click context menu
     function handleContextMenu(e: MouseEvent) {
       e.preventDefault();
@@ -235,39 +280,25 @@ function useAntiCheatControls(attemptId: string | null, activeQuestionId: string
         return false;
       }
 
-      // Detect PrintScreen key — hide content briefly so screenshot is blank
+      const k = e.key.toLowerCase();
+
+      // ----- Screenshot shortcuts -----
+      // Windows: PrintScreen, Win+PrintScreen, Alt+PrintScreen, Win+Shift+S
+      // macOS:   Cmd+Shift+3 (full), Cmd+Shift+4 (region), Cmd+Shift+5 (tool)
       if (e.key === "PrintScreen") {
-        const nowIso = new Date().toISOString();
-        logIntegrityEvent({
-          attemptId: attemptId!,
-          attemptQuestionId: activeQuestionId ?? undefined,
-          type: "SCREENSHOT",
-          startedAt: nowIso,
-          metadata: { key: "PrintScreen" },
-        }).catch(console.error);
-        // Hide page content so the captured screenshot is black
-        document.body.style.visibility = "hidden";
-        setTimeout(() => {
-          document.body.style.visibility = "visible";
-        }, 1500);
+        triggerBlackout(
+          e.metaKey ? "Win+PrintScreen" : e.altKey ? "Alt+PrintScreen" : "PrintScreen",
+        );
         e.preventDefault();
-        // Overwrite clipboard with blank
-        navigator.clipboard.writeText("").catch(() => {});
         return false;
       }
-
-      // Block Windows screenshot shortcuts: Win+Shift+S, Win+PrtSc
-      if (e.metaKey && e.shiftKey && e.key.toLowerCase() === "s") {
-        document.body.style.visibility = "hidden";
-        setTimeout(() => { document.body.style.visibility = "visible"; }, 1500);
-        const nowIso = new Date().toISOString();
-        logIntegrityEvent({
-          attemptId: attemptId!,
-          attemptQuestionId: activeQuestionId ?? undefined,
-          type: "SCREENSHOT",
-          startedAt: nowIso,
-          metadata: { key: "Win+Shift+S" },
-        }).catch(console.error);
+      if (e.metaKey && e.shiftKey && k === "s") {
+        triggerBlackout("Win+Shift+S");
+        e.preventDefault();
+        return false;
+      }
+      if (e.metaKey && e.shiftKey && (k === "3" || k === "4" || k === "5")) {
+        triggerBlackout(`Cmd+Shift+${k}`);
         e.preventDefault();
         return false;
       }
@@ -325,6 +356,8 @@ function useAntiCheatControls(attemptId: string | null, activeQuestionId: string
       document.removeEventListener("selectstart", handleSelectStart);
       document.body.style.userSelect = "";
       document.body.style.webkitUserSelect = "";
+      if (blackoutTimer) clearTimeout(blackoutTimer);
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
     };
   }, [attemptId, activeQuestionId]);
 }
