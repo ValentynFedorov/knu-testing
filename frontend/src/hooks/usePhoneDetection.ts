@@ -3,12 +3,17 @@
 import { useEffect, useRef } from "react";
 import { logIntegrityEvent } from "@/lib/api";
 
-const DETECTION_INTERVAL_MS = 3000;
-const COOLDOWN_MS = 30000;
+const DETECTION_INTERVAL_MS = 2000;
+const COOLDOWN_MS = 20000;
 const MODEL_INPUT_SIZE = 640;
 const PHONE_CLASS_ID = 67; // COCO class 67 = "cell phone"
-const CONFIDENCE_THRESHOLD = 0.75;
+// 0.5 — empirical sweet spot for webcam: yolov8s rarely exceeds 0.7-0.8 even
+// on a clearly visible phone because of lighting + low webcam resolution.
+const CONFIDENCE_THRESHOLD = 0.5;
 const NMS_IOU_THRESHOLD = 0.45;
+// Lower bound for keeping a candidate at all (logging-friendly).
+// Strict CONFIDENCE_THRESHOLD is applied separately at the call site.
+const POSTPROCESS_MIN_SCORE = 0.25;
 const MODEL_PATH = "/yolov8s.onnx";
 const MODEL_NAME = "yolov8s";
 
@@ -107,6 +112,21 @@ export function usePhoneDetection(
         const phones = detections.filter(
           (d) => d.classId === PHONE_CLASS_ID && d.confidence >= CONFIDENCE_THRESHOLD,
         );
+
+        // Always log peak phone confidence (even if under threshold) so we can
+        // see in production whether the model is detecting anything at all.
+        if (detections.length > 0) {
+          const phoneCandidates = detections.filter((d) => d.classId === PHONE_CLASS_ID);
+          if (phoneCandidates.length > 0) {
+            const peak = phoneCandidates.reduce((a, b) =>
+              a.confidence > b.confidence ? a : b,
+            );
+            console.log(
+              `[PhoneDetection] phone candidate conf=${(peak.confidence * 100).toFixed(0)}%` +
+                ` (threshold=${CONFIDENCE_THRESHOLD * 100}%)`,
+            );
+          }
+        }
 
         if (phones.length > 0) {
           const now = Date.now();
@@ -207,7 +227,7 @@ function postprocess(data: Float32Array, dims: number[]): Detection[] {
       }
     }
 
-    if (maxScore < CONFIDENCE_THRESHOLD) continue;
+    if (maxScore < POSTPROCESS_MIN_SCORE) continue;
 
     // Only keep cell phone detections to save computation
     if (maxClassId !== PHONE_CLASS_ID) continue;
