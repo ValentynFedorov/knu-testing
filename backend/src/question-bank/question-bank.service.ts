@@ -2,6 +2,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateQuestionGroupDto } from './dto/create-question-group.dto';
 import { CreateQuestionDto } from './dto/create-question.dto';
+import { UpdateQuestionDto } from './dto/update-question.dto';
 import { ImportQuestionsDto, ImportQuestionItemDto } from './dto/import-questions.dto';
 import { QuestionType } from '@prisma/client';
 import Anthropic from '@anthropic-ai/sdk';
@@ -148,6 +149,123 @@ export class QuestionBankService {
         options: true,
         gradingKey: true,
       },
+    });
+  }
+
+  async updateQuestion(
+    teacherId: string,
+    questionId: string,
+    dto: UpdateQuestionDto,
+  ) {
+    const existing = await this.prisma.question.findUnique({
+      where: { id: questionId },
+    });
+    if (!existing || existing.teacherId !== teacherId) {
+      throw new BadRequestException('Question not found or access denied');
+    }
+
+    // Block edits if students have already answered this question
+    // (preserves grading integrity). Teacher can still delete + recreate.
+    const usedInAttempts = await this.prisma.attemptQuestion.count({
+      where: { questionId },
+    });
+    if (usedInAttempts > 0) {
+      throw new BadRequestException(
+        'Cannot edit a question that has already been answered by students. ' +
+          'Delete it and create a new one instead.',
+      );
+    }
+
+    const finalType = (dto.type ?? existing.type) as QuestionType;
+
+    // Type-specific validation against the final shape
+    if (
+      finalType === 'SINGLE_CHOICE' ||
+      finalType === 'MULTIPLE_CHOICE'
+    ) {
+      // If options weren't sent, we keep the existing ones. If they were
+      // sent, we replace and require at least 2 + ≥1 correct.
+      if (dto.options !== undefined) {
+        if (!dto.options || dto.options.length < 2) {
+          throw new BadRequestException(
+            'Choice questions must have at least 2 options',
+          );
+        }
+        const correct = dto.options.filter((o) => o.isCorrect).length;
+        if (correct === 0) {
+          throw new BadRequestException(
+            'At least one option must be marked correct',
+          );
+        }
+        if (finalType === 'SINGLE_CHOICE' && correct !== 1) {
+          throw new BadRequestException(
+            'SINGLE_CHOICE must have exactly one correct option',
+          );
+        }
+      }
+    }
+    if (finalType === 'MATCHING' && dto.matchingSchema === null) {
+      throw new BadRequestException('Matching question must have a schema');
+    }
+    if (finalType === 'GAP_TEXT' && dto.gapSchema === null) {
+      throw new BadRequestException('Gap-text question must have a schema');
+    }
+
+    // Update the question row
+    const updateData: any = {};
+    if (dto.type !== undefined) updateData.type = dto.type;
+    if (dto.text !== undefined) updateData.text = dto.text;
+    if (dto.imageUrl !== undefined) updateData.imageUrl = dto.imageUrl;
+    if (dto.weight !== undefined) updateData.weight = dto.weight;
+    if (dto.perQuestionTimeSec !== undefined) {
+      updateData.perQuestionTimeSec = dto.perQuestionTimeSec;
+    }
+    if (dto.matchingSchema !== undefined) {
+      updateData.matchingSchema = dto.matchingSchema as any;
+    }
+    if (dto.gapSchema !== undefined) {
+      updateData.gapSchema = dto.gapSchema as any;
+    }
+
+    await this.prisma.question.update({
+      where: { id: questionId },
+      data: updateData,
+    });
+
+    // Replace options if provided
+    if (dto.options !== undefined) {
+      await this.prisma.questionOption.deleteMany({ where: { questionId } });
+      if (dto.options && dto.options.length > 0) {
+        await this.prisma.questionOption.createMany({
+          data: dto.options.map((opt) => ({
+            questionId,
+            label: opt.label,
+            value: opt.value,
+            imageUrl: opt.imageUrl,
+            isCorrect: opt.isCorrect,
+            orderIndex: opt.orderIndex,
+          })),
+        });
+      }
+    }
+
+    // Replace grading config if provided
+    if (dto.gradingConfig !== undefined) {
+      await this.prisma.questionGradingKey.deleteMany({ where: { questionId } });
+      if (dto.gradingConfig) {
+        await this.prisma.questionGradingKey.create({
+          data: {
+            questionId,
+            rubric: {},
+            autoGradingConfig: dto.gradingConfig as any,
+          },
+        });
+      }
+    }
+
+    return this.prisma.question.findUnique({
+      where: { id: questionId },
+      include: { options: true, gradingKey: true },
     });
   }
 

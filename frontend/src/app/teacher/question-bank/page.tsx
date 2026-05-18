@@ -71,8 +71,9 @@ export default function QuestionBankPage() {
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupDesc, setNewGroupDesc] = useState("");
 
-  // Question creation modal
+  // Question creation/edit modal
   const [showQuestionModal, setShowQuestionModal] = useState(false);
+  const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
   // Import questions modal (JSON paste/upload + PDF/Word AI generation)
   const [showImportModal, setShowImportModal] = useState(false);
   const [importMode, setImportMode] = useState<"JSON" | "DOCUMENT">("JSON");
@@ -380,16 +381,119 @@ export default function QuestionBankPage() {
 
   async function deleteQuestion(qId: string) {
     if (!confirm("Видалити питання?")) return;
+    setError(null);
+    setSuccessMsg(null);
     try {
       const res = await fetch(`/api/teacher/questions/${qId}/delete`, {
         method: "POST",
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const text = await res.text();
+        let msg = "Не вдалося видалити питання";
+        try {
+          const data = JSON.parse(text);
+          if (data?.message) msg = data.message;
+        } catch {
+          if (text) msg = text;
+        }
+        throw new Error(msg);
+      }
+      setSuccessMsg("Питання видалено");
       if (selectedGroupId) await loadQuestions(selectedGroupId);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError("Не вдалося видалити питання");
+      setError(err?.message || "Не вдалося видалити питання");
     }
+  }
+
+  function startEditQuestion(q: Question) {
+    // Pre-fill the question form from the existing question and open the modal.
+    setEditingQuestionId(q.id);
+    setQType(q.type);
+    setQText(q.text || "");
+    setQImageUrl(q.imageUrl ?? null);
+    setQWeight(Number(q.weight) || 1);
+    setQTimeSec(q.perQuestionTimeSec ?? undefined);
+
+    // Options for choice questions
+    if (q.type === "SINGLE_CHOICE" || q.type === "MULTIPLE_CHOICE") {
+      const opts = (q.options || []).map((o, i) => ({
+        label: o.label || String.fromCharCode(65 + i),
+        value: o.value,
+        isCorrect: !!o.isCorrect,
+        orderIndex: o.orderIndex ?? i,
+        imageUrl: o.imageUrl ?? undefined,
+      }));
+      setQOptions(
+        opts.length >= 2
+          ? opts
+          : [
+              { label: "A", value: "", isCorrect: true, orderIndex: 0, imageUrl: undefined },
+              { label: "B", value: "", isCorrect: false, orderIndex: 1, imageUrl: undefined },
+            ],
+      );
+    } else {
+      setQOptions([
+        { label: "A", value: "", isCorrect: true, orderIndex: 0, imageUrl: undefined },
+        { label: "B", value: "", isCorrect: false, orderIndex: 1, imageUrl: undefined },
+      ]);
+    }
+
+    // Matching pairs
+    if (q.type === "MATCHING" && q.matchingSchema) {
+      const pairs = Object.entries(q.matchingSchema).map(([left, right]) => ({
+        left,
+        right: String(right),
+      }));
+      setMatchingPairs(pairs.length >= 2 ? pairs : [{ left: "", right: "" }, { left: "", right: "" }]);
+    } else {
+      setMatchingPairs([{ left: "", right: "" }, { left: "", right: "" }]);
+    }
+
+    // Open-text grading config
+    if (q.type === "OPEN_TEXT" && q.gradingConfig) {
+      const gc: any = q.gradingConfig;
+      setOpenTextFormat(gc.format || "SHORT_TEXT");
+      setOpenTextMatchingMode(gc.matchingMode || "EXACT");
+      setCodeLanguage(gc.language || "python");
+      setOpenTextExpected(
+        Array.isArray(gc.expectedAnswers) && gc.expectedAnswers.length > 0
+          ? gc.expectedAnswers
+          : [""],
+      );
+    } else {
+      setOpenTextFormat("SHORT_TEXT");
+      setCodeLanguage("python");
+      setOpenTextMatchingMode("EXACT");
+      setOpenTextExpected([""]);
+    }
+
+    // Gap-text schema
+    if (q.type === "GAP_TEXT" && q.gapSchema) {
+      const schema: any = q.gapSchema;
+      const gaps = Array.isArray(schema.gaps) ? schema.gaps : [];
+      setGapItems(
+        gaps.length > 0
+          ? gaps.map((g: any, i: number) => ({
+              id: g.id || `gap${i + 1}`,
+              mode: g.mode || "TEXT",
+              options: Array.isArray(g.options) ? g.options.join(", ") : "",
+              correctAnswers: Array.isArray(g.correctAnswers)
+                ? g.correctAnswers.join(", ")
+                : "",
+              matchingMode: g.matchingMode || "EXACT",
+            }))
+          : [{ id: "gap1", mode: "TEXT", options: "", correctAnswers: "", matchingMode: "EXACT" }],
+      );
+    } else {
+      setGapItems([
+        { id: "gap1", mode: "TEXT", options: "", correctAnswers: "", matchingMode: "EXACT" },
+      ]);
+    }
+
+    setError(null);
+    setSuccessMsg(null);
+    setShowQuestionModal(true);
   }
 
   function openImportModal() {
@@ -537,6 +641,7 @@ export default function QuestionBankPage() {
   }
 
   function resetQuestionForm() {
+    setEditingQuestionId(null);
     setQType("SINGLE_CHOICE");
     setQText("");
     setQImageUrl(null);
@@ -745,22 +850,39 @@ export default function QuestionBankPage() {
     }
 
     try {
-      const res = await fetch("/api/teacher/questions", {
+      const isEdit = !!editingQuestionId;
+      const url = isEdit
+        ? `/api/teacher/questions/${editingQuestionId}/update`
+        : "/api/teacher/questions";
+      // groupId is fixed for updates — drop from payload
+      const finalPayload = isEdit
+        ? { ...payload, groupId: undefined }
+        : payload;
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(finalPayload),
       });
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text);
+        let msg = isEdit
+          ? "Не вдалося оновити питання"
+          : "Не вдалося створити питання";
+        try {
+          const data = JSON.parse(text);
+          if (data?.message) msg = data.message;
+        } catch {
+          if (text) msg = text;
+        }
+        throw new Error(msg);
       }
-      setSuccessMsg("Питання створено!");
+      setSuccessMsg(isEdit ? "Питання оновлено!" : "Питання створено!");
       resetQuestionForm();
       setShowQuestionModal(false);
       await loadQuestions(selectedGroupId);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError("Не вдалося створити питання");
+      setError(err?.message || "Не вдалося зберегти питання");
     }
   }
 
@@ -912,14 +1034,24 @@ className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs
                         </span>
                         <span>Вага: {q.weight}{q.perQuestionTimeSec ? ` · ${q.perQuestionTimeSec}с` : ""}</span>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => deleteQuestion(q.id)}
-                        className="text-zinc-400 hover:text-red-500"
-                        title="Видалити питання"
-                      >
-                        ✕
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => startEditQuestion(q)}
+                          className="rounded px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-900/30"
+                          title="Редагувати питання"
+                        >
+                          ✎ Редагувати
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteQuestion(q.id)}
+                          className="rounded px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/30"
+                          title="Видалити питання"
+                        >
+                          🗑 Видалити
+                        </button>
+                      </div>
                     </div>
                     {questionImageSrc && (
                       <img
@@ -998,7 +1130,7 @@ className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white p-6 dark:bg-zinc-900">
             <h3 className="mb-4 text-lg font-semibold text-zinc-900 dark:text-zinc-50">
-              Нове питання
+              {editingQuestionId ? "Редагувати питання" : "Нове питання"}
             </h3>
             <form onSubmit={handleCreateQuestion} className="space-y-4">
               {/* Question type */}
@@ -1551,7 +1683,10 @@ className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowQuestionModal(false)}
+                  onClick={() => {
+                    setShowQuestionModal(false);
+                    resetQuestionForm();
+                  }}
                   className="rounded-lg bg-zinc-200 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-600"
                 >
                   Скасувати
@@ -1560,7 +1695,7 @@ className="w-full rounded-lg border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs
                   type="submit"
                   className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
                 >
-                  Створити питання
+                  {editingQuestionId ? "Зберегти зміни" : "Створити питання"}
                 </button>
               </div>
             </form>
