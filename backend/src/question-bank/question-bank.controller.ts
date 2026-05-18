@@ -15,6 +15,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { QuestionBankService } from './question-bank.service';
 import { CreateQuestionGroupDto } from './dto/create-question-group.dto';
 import { CreateQuestionDto } from './dto/create-question.dto';
+import { UpdateQuestionDto } from './dto/update-question.dto';
 import { ImportQuestionsDto } from './dto/import-questions.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
@@ -41,6 +42,15 @@ export class QuestionBankController {
   @Post('questions/import')
   importQuestions(@Req() req: any, @Body() dto: ImportQuestionsDto) {
     return this.questionBankService.importQuestions(req.user.id, dto);
+  }
+
+  @Post('questions/:id/update')
+  updateQuestion(
+    @Req() req: any,
+    @Param('id') id: string,
+    @Body() dto: UpdateQuestionDto,
+  ) {
+    return this.questionBankService.updateQuestion(req.user.id, id, dto);
   }
 
   @Get('claude-prompt')
